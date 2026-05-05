@@ -9,4 +9,4 @@ Data - This folder contains the data files required for running the script.
 
 Results - This folder contains all the figures for the article submission (main text and supplemental).
 
-Diagnostics - This folder contains the diagnostic plots for each skeletal trait x model (produced with bayesplot).
+Diagnostics - This folder contains the model diagnostic plots (produced with bayesplot).
