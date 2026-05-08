@@ -1,0 +1,1262 @@
+---
+title: "MultiSiteSkeletons"
+author: "Callum Hudson"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+library(ggsci)
+library(brms)
+library(bayesplot)
+library(gridExtra)
+library(grid)
+library(tidybayes)
+library(patchwork)
+```
+
+
+```{r}
+skeleton_data <- read.csv("Data/SkeletonData.csv") %>% dplyr::select(Abs_lat, Genus, Species, SitePair, UrchinID, Condition, TestDiameter, ThicknessCT.um., Porosity, MgCO3, Spine_length, Spine_diameter, Spine_porosity, Jaw_length) %>%
+    rename(
+         Site = Condition) 
+
+
+
+environmental_data <- read.csv("Data/EnvData.csv")
+
+# ---- Merge EnvData and Skeletal Data ---- #
+dat_all <- skeleton_data %>%
+  left_join(
+    environmental_data,
+    by = c("SitePair", "Site"))
+
+dat_all <- dat_all %>%
+  mutate(
+    Biomineral       = 100 - Porosity,                  
+    Biomineral_z     = as.numeric(scale(Biomineral)),
+    Thickness_z      = as.numeric(scale(ThicknessCT.um.)),
+    SpineDia_z       = as.numeric(scale(Spine_diameter)),
+    SpineLen_z       = as.numeric(scale(Spine_length)),
+    SpinePor_z       = as.numeric(scale(Spine_porosity)),
+    SpineBiomineral  = 100 - Spine_porosity,
+    SpineBiomineral_z     = as.numeric(scale(SpineBiomineral)),
+    JawLen_z         = as.numeric(scale(Jaw_length)),
+    TestDiameter_z = as.numeric(scale(TestDiameter)),
+    pH_z = as.numeric(scale(median_pH)),
+    SitePair = factor(SitePair),
+    Analogue = factor(Analogue),
+    Genus    = factor(Genus)
+  )
+
+dat_all$SiteID <- interaction(dat_all$Analogue,
+                              dat_all$SitePair,
+                              dat_all$Site,
+                              drop = TRUE)
+```
+
+# pH models
+```{r}
+# ---- Full code for each, later using functions loop over traits ---- #
+
+# Test Biomineral
+model_biom_consistency <- brm(
+  Biomineral_z ~ scale(TestDiameter) + scale(median_pH) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99,
+                   max_treedepth = 15)
+)
+
+# Test Thickness
+model_thi_consistency <- brm(
+  Thickness_z ~ scale(TestDiameter) + scale(median_pH) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99,
+                   max_treedepth = 15)
+)
+
+# Jaw Length
+model_jaw_len_consistency <- brm(
+  JawLen_z ~ scale(TestDiameter) + scale(median_pH) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99,
+                   max_treedepth = 15)
+)
+
+# Spine Biomineral
+model_spine_por_consistency <- brm(
+  SpineBiomineral_z ~ scale(TestDiameter) + scale(median_pH) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99,
+                   max_treedepth = 15)
+)
+
+# Spine Thickness
+model_spine_dia_consistency <- brm(
+  SpineDia_z ~ scale(TestDiameter) + scale(median_pH) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99,
+                   max_treedepth = 15)
+)
+
+# Spine Length
+model_spine_len_consistency <- brm(
+  SpineLen_z ~ scale(TestDiameter) + scale(median_pH) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99,
+                   max_treedepth = 15)
+)
+
+# ---- Extract posterior draws for median pH ---- #
+get_pH_draws <- function(model, response_name) {
+  as_draws_df(model) %>%
+    select(b_scalemedian_pH) %>%   # correct column name from brms
+    mutate(response = response_name)
+}
+
+draws_all <- bind_rows(
+  get_pH_draws(model_biom_consistency,        "Test Biomineral (%)"),
+  get_pH_draws(model_thi_consistency,        "Test Thickness (µm)"),
+  get_pH_draws(model_spine_por_consistency,  "Spine Biomineral (%)"),
+  get_pH_draws(model_spine_dia_consistency,  "Spine Thickness (µm)"),
+  get_pH_draws(model_spine_len_consistency,  "Spine Length (mm)"),
+  get_pH_draws(model_jaw_len_consistency,    "Jaw Length (mm)")
+)
+
+# ---- Summarise posterior (median + 95% & 50% HDI) ---- #
+sum_95 <- draws_all %>%
+  group_by(response) %>%
+  median_hdi(b_scalemedian_pH, .width = 0.95) %>%
+  rename(
+    median      = b_scalemedian_pH,
+    hdi_95_low  = .lower,
+    hdi_95_high = .upper
+  )
+
+sum_50 <- draws_all %>%
+  group_by(response) %>%
+  median_hdi(b_scalemedian_pH, .width = 0.50) %>%
+  rename(
+    hdi_50_low  = .lower,
+    hdi_50_high = .upper
+  )
+
+effects_sum <- sum_95 %>%
+  left_join(sum_50, by = "response")
+
+effects_sum <- effects_sum %>%
+  mutate(
+    median_flip   = -median,
+    hdi_95_low_flip = -hdi_95_high,  
+    hdi_95_high_flip = -hdi_95_low,
+    hdi_50_low_flip  = -hdi_50_high,
+    hdi_50_high_flip = -hdi_50_low
+  ) %>%
+  mutate(
+    seg_color = case_when(
+      median_flip > 0 ~ "#ffc857ff",  
+      median_flip < 0 ~ "#9c7acfff",
+      TRUE            ~ "#ffc857ff"
+    ),
+    fill_color = case_when(
+      hdi_95_low_flip  > 0 ~ "#ffc857ff",
+      hdi_95_high_flip < 0 ~ "#9c7acfff",
+      TRUE                 ~ "#FFFFFF"
+    ),
+    response = factor(response, levels = c(
+      "Jaw Length (mm)",
+      "Spine Length (mm)",
+      "Spine Thickness (µm)",
+      "Spine Biomineral (%)",
+      "Test Thickness (µm)",
+      "Test Biomineral (%)"
+    ))
+  )
+
+# ---- Plot (flip x-axis to show decreasing pH) ---- #
+SiteEffects_pH <- ggplot(effects_sum, aes(x = median_flip, y = response)) +
+  geom_segment(
+    aes(x = hdi_95_low_flip, xend = hdi_95_high_flip, yend = response, color = seg_color),
+    linewidth = 0.6
+  ) +
+  geom_segment(
+    aes(x = hdi_50_low_flip, xend = hdi_50_high_flip, yend = response, color = seg_color),
+    linewidth = 2
+  ) +
+  geom_point(
+    aes(fill = fill_color),
+    shape = 21,
+    size = 5,
+    color = "black"
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.5) +
+  scale_color_identity() +
+  scale_fill_identity() +
+  labs(
+    x = expression("β (Median pH"[T]*")"),
+    y = ""
+  ) +
+  theme_classic(base_size = 16) +
+  theme(
+    panel.border = element_rect(fill = NA, color = "black"),
+    legend.position = "none"
+  )
+
+
+SiteEffects_pH
+
+ggsave(
+  "pH_MainEffect_plot.svg",
+  plot = SiteEffects_pH,
+  width = 6,
+  height = 4.5,
+  units = "in",
+  dpi = 300
+)
+
+```
+
+# R2 Statistics
+```{r}
+models <- list(
+  "Test Biomineral Content" = model_biom_consistency,
+  "Test Thickness" = model_thi_consistency,
+  "Jaw Length" = model_jaw_len_consistency,
+  "Spine Biomineral Content" = model_spine_por_consistency,
+  "Spine Thickness" = model_spine_dia_consistency,
+  "Spine Length" = model_spine_len_consistency
+)
+
+r2_results <- lapply(names(models), function(trait){
+  
+  r2 <- bayes_R2(models[[trait]])
+  
+  data.frame(
+    Trait = trait,
+    Estimate = r2[, "Estimate"],
+    Est_Error = r2[, "Est.Error"],
+    Q2.5 = r2[, "Q2.5"],
+    Q97.5 = r2[, "Q97.5"]
+  )
+})
+
+r2_results_pH_reduced_model <- dplyr::bind_rows(r2_results)
+
+r2_results_pH_reduced_model
+
+write.csv(r2_results_pH_reduced_model, "r2_results_pH_reduced_model.csv", row.names = FALSE)
+```
+
+# Diagnostic plots for pH models
+```{r}
+color_scheme_set("purple")
+
+save_model_diagnostics <- function(model, model_name, folder){
+
+  
+  dir.create(folder, recursive = TRUE, showWarnings = FALSE)
+
+  
+  brms_plots <- plot(model)
+
+  posterior_hist  <- brms_plots[[1]]
+  posterior_trace <- brms_plots[[2]]
+
+  
+  pp <- pp_check(model) +
+    ggtitle("Posterior predictive check")
+
+  
+  combined <- arrangeGrob(
+    posterior_hist,
+    posterior_trace,
+    pp,
+    ncol = 1,
+    heights = c(1, 1, 1.1)
+  )
+
+  # Save to chosen folder
+  ggsave(
+    filename = paste0(folder, "/", model_name, "_ALL_diagnostics.png"),
+    plot = combined,
+    width = 10,
+    height = 16,
+    dpi = 300
+  )
+}
+
+models <- list(
+  "Test_Biomineral_Content" = model_biom_consistency,
+  "Test_Thickness" = model_thi_consistency,
+  "Jaw_Length" = model_jaw_len_consistency,
+  "Spine_Biomineral_Content" = model_spine_por_consistency,
+  "Spine_Thickness" = model_spine_dia_consistency,
+  "Spine_Length" = model_spine_len_consistency
+)
+
+invisible(
+  lapply(names(models), function(name){
+    save_model_diagnostics(models[[name]], name,
+                           "DiagnosticPlots/pH_models")
+  })
+)
+```
+
+# pH models but plotting Test Diameter effects
+```{r}
+# ---- Extract posterior draws for Test Diameter ---- #
+
+get_diameter_draws <- function(model, response_name) {
+  as_draws_df(model) %>%
+    select(b_scaleTestDiameter) %>%   
+    mutate(response = response_name)
+}
+
+draws_all_diameter <- bind_rows(
+  get_diameter_draws(model_biom_consistency,        "Test Biomineral (%)"),
+  get_diameter_draws(model_thi_consistency,         "Test Thickness (µm)"),
+  get_diameter_draws(model_spine_por_consistency,   "Spine Biomineral (%)"),
+  get_diameter_draws(model_spine_dia_consistency,   "Spine Thickness (µm)"),
+  get_diameter_draws(model_spine_len_consistency,   "Spine Length (mm)"),
+  get_diameter_draws(model_jaw_len_consistency,     "Jaw Length (mm)")
+)
+
+# ---- Plot ---- #
+sum_95_diameter <- draws_all_diameter %>%
+  group_by(response) %>%
+  median_hdi(b_scaleTestDiameter, .width = 0.95) %>%
+  rename(
+    median      = b_scaleTestDiameter,
+    hdi_95_low  = .lower,
+    hdi_95_high = .upper
+  )
+
+sum_50_diameter <- draws_all_diameter %>%
+  group_by(response) %>%
+  median_hdi(b_scaleTestDiameter, .width = 0.50) %>%
+  rename(
+    hdi_50_low  = .lower,
+    hdi_50_high = .upper
+  )
+
+effects_sum_diameter <- sum_95_diameter %>%
+  left_join(sum_50_diameter, by = "response")
+
+effects_sum_diameter <- effects_sum_diameter %>%
+  mutate(
+    seg_color = case_when(
+      median > 0 ~ "#ffc857ff",
+      median < 0 ~ "#9c7acfff",
+      TRUE       ~ "#ffc857ff"
+    ),
+    fill_color = case_when(
+      hdi_95_low  > 0 ~ "#ffc857ff",
+      hdi_95_high < 0 ~ "#9c7acfff",
+      TRUE            ~ "#FFFFFF"
+    ),
+    response = factor(response, levels = c(
+      "Jaw Length (mm)",
+      "Spine Length (mm)",
+      "Spine Thickness (µm)",
+      "Spine Biomineral (%)",
+      "Test Thickness (µm)",
+      "Test Biomineral (%)"
+    ))
+  )
+
+DiameterEffects <- ggplot(effects_sum_diameter, aes(x = median, y = response)) +
+  geom_segment(
+    aes(x = hdi_95_low, xend = hdi_95_high, yend = response, color = seg_color),
+    linewidth = 0.6
+  ) +
+  geom_segment(
+    aes(x = hdi_50_low, xend = hdi_50_high, yend = response, color = seg_color),
+    linewidth = 2
+  ) +
+  geom_point(
+    aes(fill = fill_color),
+    shape = 21,
+    size = 5,
+    color = "black"
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.5) +
+  scale_color_identity() +
+  scale_fill_identity() +
+  labs(
+    x = "β (Test Diameter)",
+    y = ""
+  ) +
+  theme_classic(base_size = 16) +
+  theme(
+    panel.border = element_rect(fill = NA, color = "black"),
+    legend.position = "none"
+  )
+
+DiameterEffects
+
+ggsave("Diameter_MainEffect_plot.svg",
+       plot = DiameterEffects,
+       width = 6, height = 4.5, units = "in", dpi = 300)
+```
+
+# Omega Mg-Calcite saturation models
+```{r}
+dat_all<- dat_all %>%
+  mutate(
+    Omega_z = as.numeric(scale(median_omega_mg_calcite))
+  )
+
+# Test Biomineral
+model_biom_consistency_omega <- brm(
+  Biomineral_z ~ scale(TestDiameter) + Omega_z +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+# Test Thickness
+model_thi_consistency_omega <- brm(
+    Thickness_z ~ scale(TestDiameter) + Omega_z +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+# Jaw Length 
+model_jaw_len_consistency_omega <- brm(
+  JawLen_z ~ scale(TestDiameter) + Omega_z +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+# Spine Biomineral 
+model_spine_por_consistency_omega <- brm(
+  SpineBiomineral_z ~ scale(TestDiameter) + Omega_z +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+# Spine Diameter
+model_spine_dia_consistency_omega <- brm(
+  SpineDia_z ~ scale(TestDiameter) + Omega_z +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+# Spine Length
+model_spine_len_consistency_omega <- brm(
+  SpineLen_z ~ scale(TestDiameter) + Omega_z +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+
+# ---- Extract posterior draws for Omega Mg-Calcite ---- #
+get_omega_draws <- function(model, response_name) {
+  as_draws_df(model) %>%
+    select(b_Omega_z) %>%
+    mutate(response = response_name)
+}
+
+draws_all <- bind_rows(
+  get_omega_draws(model_biom_consistency_omega, "Test Biomineral (%)"),
+  get_omega_draws(model_thi_consistency_omega, "Test Thickness (µm)"),
+  get_omega_draws(model_spine_por_consistency_omega, "Spine Biomineral (%)"),
+  get_omega_draws(model_spine_dia_consistency_omega, "Spine Thickness (µm)"),
+  get_omega_draws(model_spine_len_consistency_omega, "Spine Length (mm)"),
+  get_omega_draws(model_jaw_len_consistency_omega, "Jaw Length (mm)")
+)
+
+# ---- Plot ---- #
+sum_95 <- draws_all %>%
+  group_by(response) %>%
+  median_hdi(b_Omega_z, .width = 0.95) %>%
+  rename(
+    median      = b_Omega_z,
+    hdi_95_low  = .lower,
+    hdi_95_high = .upper
+  )
+
+sum_50 <- draws_all %>%
+  group_by(response) %>%
+  median_hdi(b_Omega_z, .width = 0.50) %>%
+  rename(
+    hdi_50_low  = .lower,
+    hdi_50_high = .upper
+  )
+
+effects_sum <- sum_95 %>%
+  left_join(sum_50, by = "response")
+
+effects_sum <- effects_sum %>%
+  mutate(
+    median_flip   = -median,
+    hdi_95_low_flip = -hdi_95_high,
+    hdi_95_high_flip = -hdi_95_low,
+    hdi_50_low_flip  = -hdi_50_high,
+    hdi_50_high_flip = -hdi_50_low
+  ) %>%
+  mutate(
+    seg_color = case_when(
+      median_flip > 0 ~ "#ffc857ff",
+      median_flip < 0 ~ "#9c7acfff",
+      TRUE            ~ "#ffc857ff"
+    ),
+    fill_color = case_when(
+      hdi_95_low_flip  > 0 ~ "#ffc857ff",
+      hdi_95_high_flip < 0 ~ "#9c7acfff",
+      TRUE                 ~ "#FFFFFF"
+    ),
+    response = factor(response, levels = c(
+      "Jaw Length (mm)",
+      "Spine Length (mm)",
+      "Spine Thickness (µm)",
+      "Spine Biomineral (%)",
+      "Test Thickness (µm)",
+      "Test Biomineral (%)"
+    ))
+  )
+
+SiteEffects_Omega <- ggplot(effects_sum, aes(x = median_flip, y = response)) +
+  geom_segment(
+    aes(x = hdi_95_low_flip, xend = hdi_95_high_flip, yend = response, color = seg_color),
+    linewidth = 0.6
+  ) +
+  geom_segment(
+    aes(x = hdi_50_low_flip, xend = hdi_50_high_flip, yend = response, color = seg_color),
+    linewidth = 2
+  ) +
+  geom_point(
+    aes(fill = fill_color),
+    shape = 21,
+    size = 5,
+    color = "black"
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.5) +
+  scale_color_identity() +
+  scale_fill_identity() +
+  labs(
+    x = expression("β ("*Omega[Mg-calcite]*")"),
+    y = ""
+  ) +
+  theme_classic(base_size = 16) +
+  theme(
+    panel.border = element_rect(fill = NA, color = "black"),
+    legend.position = "none"
+  )
+
+SiteEffects_Omega
+
+ggsave("OmegaMgCalcite_MainEffect_plot.svg",
+       plot = SiteEffects_Omega,
+       width = 6, height = 4.5, units = "in", dpi = 300)
+```
+
+# R2 Statistics
+```{r}
+models <- list(
+  "Test Biomineral Content" = model_biom_consistency_omega,
+  "Test Thickness" = model_thi_consistency_omega,
+  "Jaw Length" = model_jaw_len_consistency_omega,
+  "Spine Biomineral Content" = model_spine_por_consistency_omega,
+  "Spine Thickness" = model_spine_dia_consistency_omega,
+  "Spine Length" = model_spine_len_consistency_omega
+)
+
+r2_results <- lapply(names(models), function(trait){
+  
+  r2 <- bayes_R2(models[[trait]])
+  
+  data.frame(
+    Trait = trait,
+    Estimate = r2[, "Estimate"],
+    Est_Error = r2[, "Est.Error"],
+    Q2.5 = r2[, "Q2.5"],
+    Q97.5 = r2[, "Q97.5"]
+  )
+})
+
+r2_results_omega_model <- dplyr::bind_rows(r2_results)
+
+write.csv(r2_results_omega_model, "r2_results_omega_model.csv", row.names = FALSE)
+```
+
+# Diagnostic plots
+```{r}
+models <- list(
+  "Test_Biomineral_Content" = model_biom_consistency_omega,
+  "Test_Thickness" = model_thi_consistency_omega,
+  "Jaw_Length" = model_jaw_len_consistency_omega,
+  "Spine_Biomineral_Content" = model_spine_por_consistency_omega,
+  "Spine_Thickness" = model_spine_dia_consistency_omega,
+  "Spine_Length" = model_spine_len_consistency_omega
+)
+
+invisible(
+  lapply(names(models), function(name){
+    save_model_diagnostics(models[[name]], name,
+                           "DiagnosticPlots/OmegaMgCalcite_models")
+  })
+)
+```
+
+# pH x Absolute Latitude interaction models
+```{r}
+traits <- c(
+  "Biomineral",
+  "ThicknessCT.um.",
+  "Jaw_length",
+  "SpineBiomineral",
+  "Spine_diameter",
+  "Spine_length"
+)
+
+dat_all$Abs_lat_z <- as.numeric(scale(dat_all$Abs_lat))
+
+lat_mean <- mean(dat_all$Abs_lat)
+lat_sd   <- sd(dat_all$Abs_lat)
+
+pH_mean  <- mean(dat_all$median_pH)
+pH_sd    <- sd(dat_all$median_pH)
+
+lat_vals <- c(10, 25, 40)
+lat_vals_z <- (lat_vals - lat_mean) / lat_sd
+
+pH_lat_models <- list()
+
+for(trait in traits){
+
+  formula <- as.formula(
+    paste0(trait, " ~ 1 +
+           pH_z * Abs_lat_z +
+           TestDiameter_z +
+           (1 + pH_z || Genus) +
+           (1 | Analogue/SitePair)")
+  )
+
+  pH_lat_models[[trait]] <- brm(
+    formula = formula,
+    data = dat_all,
+    iter = 4000,
+    chains = 3,
+    cores = 3,
+    seed = 1999,
+    control = list(adapt_delta = 0.99,
+                   max_treedepth = 15)
+  )
+}
+
+size_corrected_data <- list()
+
+for(trait in traits){
+
+  mod <- pH_lat_models[[trait]]
+  beta_size <- fixef(mod)["TestDiameter_z","Estimate"]
+
+  tmp <- dat_all %>%
+    mutate(
+      trait_value = .data[[trait]],
+      trait_corr  = trait_value - beta_size * TestDiameter_z
+    )
+
+  size_corrected_data[[trait]] <- tmp
+}
+
+trait_to_label <- c(
+  Biomineral = "Predicted Test Biomineral (%)",
+  ThicknessCT.um. = "Predicted Test Thickness (µm)",
+  SpineBiomineral = "Predicted Spine Biomineral (%)",
+  Spine_diameter = "Predicted Spine Thickness (µm)",
+  Spine_length = "Predicted Spine Length (mm)",
+  Jaw_length = "Predicted Jaw Length (mm)"
+)
+
+fitted_plots <- list()
+
+for(trait in traits){
+
+  mod <- pH_lat_models[[trait]]
+
+  newdata <- expand.grid(
+    pH_z = seq(min(dat_all$pH_z),
+               max(dat_all$pH_z),
+               length.out = 100),
+    Abs_lat_z = lat_vals_z,
+    TestDiameter_z = 0
+  )
+
+  fitted <- add_epred_draws(mod,
+                            newdata = newdata,
+                            re_formula = NA)
+
+  fitted <- fitted %>%
+    mutate(
+      median_pH = pH_z * pH_sd + pH_mean,
+      Abs_lat   = Abs_lat_z * lat_sd + lat_mean,
+      lat_zone = case_when(
+        Abs_lat < 23.5 ~ 10,
+        Abs_lat <= 35  ~ 25,
+        Abs_lat > 35   ~ 40
+      ),
+      lat_label = factor(
+        lat_zone,
+        levels = c(40,25,10),
+        labels = c("40°","25°","10°")
+      )
+    )
+
+  fitted_summary <- fitted %>%
+    group_by(median_pH, lat_label) %>%
+    median_hdci(.epred, .width = c(0.95, 0.5)) %>%
+    ungroup() %>%
+    arrange(lat_label, median_pH)
+
+  hd95 <- fitted_summary %>% 
+    filter(.width == 0.95) %>% 
+    select(median_pH, lat_label,
+           hdi_95_low = .lower,
+           hdi_95_high = .upper)
+
+  hd50 <- fitted_summary %>% 
+    filter(.width == 0.5) %>% 
+    select(median_pH, lat_label,
+           hdi_50_low = .lower,
+           hdi_50_high = .upper)
+
+  median_vals <- fitted_summary %>% 
+    filter(.width == 0.95) %>% 
+    select(median_pH, lat_label,
+           median = .epred)
+
+  plot_data <- median_vals %>%
+    left_join(hd95, by = c("median_pH","lat_label")) %>%
+    left_join(hd50, by = c("median_pH","lat_label"))
+
+  overlay_data <- size_corrected_data[[trait]] %>%
+    mutate(
+      lat_zone = case_when(
+        Abs_lat < 23.5 ~ 10,
+        Abs_lat <= 35  ~ 25,
+        Abs_lat > 35   ~ 40
+      ),
+      lat_label = factor(
+        lat_zone,
+        levels = c(40,25,10),
+        labels = c("40°","25°","10°")
+      )
+    )
+
+  y_label <- trait_to_label[[trait]]
+
+  p <- ggplot(plot_data,
+              aes(x = median_pH, y = median)) +
+
+    geom_ribbon(aes(ymin = hdi_95_low,
+                    ymax = hdi_95_high,
+                    fill = lat_label,
+                    group = lat_label),
+                alpha = 0.2) +
+
+    geom_ribbon(aes(ymin = hdi_50_low,
+                    ymax = hdi_50_high,
+                    fill = lat_label,
+                    group = lat_label),
+                alpha = 0.4) +
+
+   geom_line(aes(group = lat_label),
+          color = "black",
+          size = 1) +
+
+    geom_point(data = overlay_data,
+               aes(x = median_pH,
+                   y = trait_corr,
+                   color = lat_label),
+               alpha = 0.6,
+               size = 2,
+               inherit.aes = FALSE) +
+
+    facet_wrap(~ lat_label) +
+
+    scale_fill_manual(values = c(
+      "40°" = "lightblue",
+      "25°" = "orange",
+      "10°" = "red"
+    )) +
+
+    scale_color_manual(values = c(
+      "40°" = "lightblue",
+      "25°" = "orange",
+      "10°" = "red"
+    )) +
+
+    scale_x_reverse(
+      limits = c(8.22, 7.54),
+      breaks = seq(7.6, 8.2, by = 0.2),
+      expand = c(0.02,0.02)
+    ) +
+
+    theme_classic(base_size = 16) +
+    theme(
+      legend.position = "none",
+      panel.border = element_rect(color = "black",
+                                  fill = NA,
+                                  size = 1),
+      strip.text = element_text(face = "bold")
+    ) +
+    labs(x = expression("pH"[T]), y = y_label)
+
+  fitted_plots[[trait]] <- p
+  print(p)
+}
+
+combined_pH_lat_line_plot <- wrap_plots(fitted_plots, ncol = 3)
+combined_pH_lat_line_plot
+
+ggsave(
+  "Combined_pH_lat_lineplots.svg",
+  combined_pH_lat_line_plot,
+  width = 16,
+  height = 8
+)
+```
+
+# R2 Statistics
+```{r}
+r2_results <- list()
+
+for(trait in traits){
+  
+  mod <- pH_lat_models[[trait]]
+  
+  r2 <- bayes_R2(mod)
+  
+  r2_results[[trait]] <- data.frame(
+    Trait = trait,
+    Estimate = r2[, "Estimate"],
+    Est_Error = r2[, "Est.Error"],
+    Q2.5 = r2[, "Q2.5"],
+    Q97.5 = r2[, "Q97.5"]
+  )
+}
+
+r2_results_pH_lat_interaction <- bind_rows(r2_results)
+
+r2_results_pH_lat_interaction
+
+write.csv(r2_results_pH_lat_interaction, "r2_results_pH_x_Lat_interaction.csv", row.names = FALSE)
+```
+
+# Diagnostic plots
+```{r}
+models <- pH_lat_models
+
+invisible(
+  lapply(names(models), function(name){
+    save_model_diagnostics(models[[name]], name,
+                           "DiagnosticPlots/pH_Lat_models")
+  })
+)
+```
+
+# Genus-specific responses
+```{r}
+traits <- c("Biomineral",
+            "ThicknessCT.um.",
+            "Jaw_length",
+            "SpineBiomineral", 
+            "Spine_diameter", 
+            "Spine_length")
+
+trait_labels <- c(
+  Biomineral = "Test Biomineral (%)",
+  ThicknessCT.um. = "Test Thickness (µm)",
+  SpineBiomineral = "Spine Biomineral (%)",
+  Spine_diameter = "Spine Thickness (µm)",
+  Spine_length = "Spine Length (mm)",
+  Jaw_length = "Jaw Length (mm)"
+)
+
+# ----- Genus-specific prediction curves (at mean latitude) ----- #
+pH_seq <- seq(min(dat_all$pH_z),
+              max(dat_all$pH_z),
+              length.out = 100)
+
+newdata <- expand.grid(
+  pH_z = pH_seq,
+  Abs_lat_z = 0,
+  TestDiameter_z = 0,
+  Genus = unique(dat_all$Genus),
+  Analogue = unique(dat_all$Analogue)[1],
+  SitePair = unique(dat_all$SitePair)[1]
+)
+
+fitted_list <- list()
+
+for(trait in traits){
+  
+  mod <- pH_lat_models[[trait]]
+  
+  fitted <- add_epred_draws(
+  object = mod,
+  newdata = newdata,
+  re_formula = ~(1 + pH_z | Genus),   
+  allow_new_levels = TRUE,
+  ndraws = 1000
+) %>%
+    mutate(Trait = trait)
+  
+  fitted_list[[trait]] <- fitted
+}
+
+fitted_all <- bind_rows(fitted_list) %>%
+  mutate(
+    median_pH_raw = pH_z * pH_sd + pH_mean,
+    Trait_label = factor(trait_labels[Trait],
+                         levels = trait_labels[traits])
+  )
+
+fitted_summary <- fitted_all %>%
+  group_by(Trait, Genus, pH_z, median_pH_raw, Trait_label) %>%
+  median_hdci(.epred, .width = c(0.95, 0.50)) %>%
+  ungroup()
+
+fitted_summary_wide <- fitted_summary %>%
+  pivot_wider(names_from = .width,
+              values_from = c(.epred, .lower, .upper)) %>%
+  rename(
+    median = .epred_0.95,
+    hdi_95_low = .lower_0.95,
+    hdi_95_high = .upper_0.95,
+    hdi_50_low = .lower_0.5,
+    hdi_50_high = .upper_0.5
+  )
+
+genus_order <- c("Arbacia","Paracentrotus","Echinometra","Evechinus","Diadema")
+
+genus_colors <- c(
+  Arbacia = "#d96b6b",
+  Paracentrotus = "#f4a261",
+  Echinometra = "#7f9cc9",
+  Evechinus = "#6fcf97",
+  Diadema = "#7a5aa6"
+)
+
+fitted_summary_wide$Genus <- factor(fitted_summary_wide$Genus,
+                                    levels = genus_order)
+
+Genus_line_plots <- ggplot(
+  fitted_summary_wide,
+  aes(x = median_pH_raw,
+      y = median,
+      group = Genus,
+      color = Genus,
+      fill = Genus)
+) +
+  geom_ribbon(aes(ymin = hdi_95_low,
+                  ymax = hdi_95_high),
+              alpha = 0.2,
+              color = NA) +
+  geom_ribbon(aes(ymin = hdi_50_low,
+                  ymax = hdi_50_high),
+              alpha = 0.4,
+              color = NA) +
+  geom_line(size = 1) +
+  facet_wrap(~ Trait_label, scales = "free_y") +
+  scale_color_manual(values = genus_colors) +
+  scale_fill_manual(values = genus_colors) +
+  scale_x_reverse() +
+  labs(x = expression(pH[T]),
+       y = "Predicted Trait Value") +
+  theme_classic(base_size = 16) +
+  theme(
+    strip.text = element_text(face = "bold"),
+    panel.border = element_rect(fill = NA, color = "black")
+  )
+
+ggsave("Genus_line_plots.svg",
+       Genus_line_plots,
+       width = 14, height = 12, dpi = 300)
+```
+
+
+# pH x SST interaction models
+```{r}
+traits <- c(
+  "Biomineral",
+  "ThicknessCT.um.",
+  "Jaw_length",
+  "SpineBiomineral",
+  "Spine_diameter",
+  "Spine_length"
+)
+
+temp_vals <- c(18, 23, 28)
+
+dat_all <- dat_all %>%
+  mutate(
+    pH_z = as.numeric(scale(median_pH)),
+    Temp_z = as.numeric(scale(median_temp)),
+    TestDiameter_z = as.numeric(scale(TestDiameter))
+  )
+
+pH_temp_models <- list()
+
+for(trait in traits){
+
+ formula <- as.formula(
+  paste0(trait, " ~ 1 +
+         pH_z * Temp_z +
+         TestDiameter_z +
+         (1 + pH_z || Genus) +
+         (1 | Analogue/SitePair)")
+)
+
+  pH_temp_models[[trait]] <- brm(
+    formula = formula,
+    data = dat_all,
+    iter = 4000,
+    chains = 3,
+    cores = 3,
+    seed = 123,
+    control = list(adapt_delta = 0.99,
+                   max_treedepth = 15)
+  )
+}
+
+temp_vals_z <- (temp_vals - mean(dat_all$median_temp)) / sd(dat_all$median_temp)
+testdiam_mean_z <- mean(dat_all$TestDiameter_z)
+
+size_corrected_data <- list()
+
+for(trait in traits){
+  
+  mod <- pH_temp_models[[trait]]
+  
+
+  beta_size <- fixef(mod)["TestDiameter_z","Estimate"]
+  
+  tmp <- dat_all %>%
+    mutate(
+      trait_value = .data[[trait]],
+      trait_corr = trait_value - beta_size * TestDiameter_z
+    )
+  
+  size_corrected_data[[trait]] <- tmp
+}
+
+# ---- Plot ---- #
+
+fitted_plots <- list()
+
+for(trait in traits){
+  
+  mod <- pH_temp_models[[trait]]
+  
+  newdata <- expand.grid(
+    pH_z = seq(min(dat_all$pH_z), max(dat_all$pH_z), length.out = 50),
+    Temp_z = temp_vals_z,
+    TestDiameter_z = testdiam_mean_z
+  )
+  
+ 
+  fitted <- add_epred_draws(mod, newdata = newdata, re_formula = NA)
+  
+  
+  fitted <- fitted %>%
+    mutate(
+      median_pH = pH_z * sd(dat_all$median_pH) + mean(dat_all$median_pH),
+      median_temp = Temp_z * sd(dat_all$median_temp) + mean(dat_all$median_temp)
+    )
+  
+
+  fitted_summary <- fitted %>%
+    group_by(median_pH, median_temp) %>%
+    median_hdci(.epred, .width = c(0.95, 0.5)) %>%
+    ungroup()
+  
+  hd95 <- fitted_summary %>% 
+    filter(.width == 0.95) %>% 
+    select(median_pH, median_temp,
+           hdi_95_low = .lower,
+           hdi_95_high = .upper)
+  
+  hd50 <- fitted_summary %>% 
+    filter(.width == 0.5) %>% 
+    select(median_pH, median_temp,
+           hdi_50_low = .lower,
+           hdi_50_high = .upper)
+  
+  median_vals <- fitted_summary %>% 
+    filter(.width == 0.95) %>% 
+    select(median_pH, median_temp,
+           median = .epred)
+  
+  plot_data <- median_vals %>%
+    left_join(hd95, by = c("median_pH","median_temp")) %>%
+    left_join(hd50, by = c("median_pH","median_temp")) %>%
+    mutate(
+      median_temp_label = factor(
+        median_temp,
+        levels = temp_vals,
+        labels = paste0(temp_vals,"°C")
+      )
+    )
+  
+
+ overlay_data <- size_corrected_data[[trait]] %>%
+  mutate(
+    median_temp_label = factor(
+      temp_vals[
+        apply(abs(outer(median_temp, temp_vals, "-")), 1, which.min)
+      ],
+      levels = temp_vals,
+      labels = paste0(temp_vals, "°C")
+    )
+  ) %>%
+  filter(median_temp_label %in% unique(plot_data$median_temp_label))
+  
+  
+  y_label <- trait_to_label[[trait]]
+  
+  p <- ggplot(plot_data, aes(x = median_pH, y = median)) +
+    
+    geom_ribbon(aes(ymin = hdi_95_low,
+                    ymax = hdi_95_high,
+                    fill = median_temp_label),
+                alpha = 0.2) +
+    
+    geom_ribbon(aes(ymin = hdi_50_low,
+                    ymax = hdi_50_high,
+                    fill = median_temp_label),
+                alpha = 0.4) +
+    
+    geom_line(aes(group = median_temp_label),
+              color = "black",
+              size = 1) +
+    
+    geom_point(
+  data = overlay_data,
+  aes(x = median_pH,
+      y = trait_corr,
+      color = median_temp_label),
+  inherit.aes = FALSE,
+  alpha = 0.6,
+  size = 2
+) +
+    
+    facet_wrap(~ median_temp_label) +
+    
+    scale_fill_manual(values = c("18°C" = "lightblue",
+                                 "23°C" = "orange",
+                                 "28°C" = "red")) +
+    scale_color_manual(values = c(
+  "18°C" = "lightblue",
+  "23°C" = "orange",
+  "28°C" = "red"
+)) +
+    
+    labs(
+      x = expression("pH"[T]),
+      y = y_label
+    ) +
+    
+scale_x_reverse(
+  limits = c(8.22, 7.54),
+  breaks = seq(7.6, 8.2, by = 0.2),
+  expand = c(0.02,0.02)
+) +
+    
+    theme_classic(base_size = 16) +
+    theme(
+      legend.position = "none",
+      panel.border = element_rect(color = "black",
+                                  fill = NA,
+                                  size = 1),
+      strip.text = element_text(face = "bold")
+    )
+  
+  fitted_plots[[trait]] <- p
+  print(p)
+}
+
+combined_pH_temp_line_plot <- wrap_plots(fitted_plots, ncol = 3)
+combined_pH_temp_line_plot
+
+ggsave(
+  "Combined_pH_temp_lineplots.svg",
+  combined_pH_temp_line_plot,
+  width = 16,
+  height = 8
+)
+
+```
+
+# R2 Statistics
+```{r}
+r2_results <- list()
+
+for(trait in traits){
+  
+  mod <- pH_temp_models[[trait]]
+  
+  r2 <- bayes_R2(mod)
+  
+  r2_results[[trait]] <- data.frame(
+    Trait = trait,
+    Estimate = r2[, "Estimate"],
+    Est_Error = r2[, "Est.Error"],
+    Q2.5 = r2[, "Q2.5"],
+    Q97.5 = r2[, "Q97.5"]
+  )
+}
+
+r2_results_ph_temp_interaction <- bind_rows(r2_results)
+
+r2_results_ph_temp_interaction
+
+write.csv(r2_results_ph_temp_interaction, "r2_results_ph_temp_interaction.csv", row.names = FALSE)
+
+```
+
+# Diagnostic Plots
+```{r}
+models <- pH_temp_models
+
+invisible(
+  lapply(names(models), function(name){
+    save_model_diagnostics(models[[name]], name,
+                           "DiagnosticPlots/pH_SST_models")
+  })
+)
+```
+
