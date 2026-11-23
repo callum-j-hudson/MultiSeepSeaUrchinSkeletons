@@ -1,0 +1,21 @@
+Analogue,Site,SitePair,mean_omega_calcite,median_temp,median_TA,median_pH,pH_var,perc_below_7.8,No_measurements,No_events,Dur_events_h
+Castello North,Extreme,Castello North,3.52,19.7911,2560,7.811164147,0.223,46.46,607,17,1.65
+Castello North,Reference,Castello North,4.75,19.7911,2563,7.960103454,0.078,1.99,604,0,0
+Castello South,Extreme,Castello South,3,19.7911,2560,7.913753004,0.288,31.19,840,33,2.42
+Castello South,Reference,Castello South,5.11,19.7911,2563,8.088030727,0.075,1.64,791,5,1.4
+Chiane del Lume,Extreme,Chiane del Lume,3.69,19.7911,2532,7.9616407285,0.097,8.97,1326,7,0.64
+Chiane del Lume,Reference,Chiane del Lume,5.53,19.7911,2642,7.971034977,0.055,0,1691,0,0
+Grotta del Mago,Extreme,Cave,3.56,19.7911,2541,7.867841465,0.192,34.44,1841,57,0.465
+Grotta del Mago,Reference,Cave,4.8,19.7911,2618,8.046989116,0.045,0,1331,0,0
+La Palma,Extreme,La Palma,2.99976157,21.4149,2832.98785,7.656816562,0.299031623,66.666667,9,0,
+La Palma,Reference,La Palma,4.82860018,21.4149,2439.3479,8.035383335,0.019328217,0,5,0,
+Shikine,Extreme,Shikine,2.71,22.429,2269.5,7.808857,0.11598494,45.66947938,12652,21,0.579365079
+Shikine,Reference,Shikine,5.09,22.429,2265.4,8.129235121,0.071556584,0,1968,0,0
+Upa-Upasina,Extreme,Upa-Upasina,3.31693,28.7602,2295,7.54971,0.60475,70.80851064,1175,12,2.208333333
+Upa-Upasina,Reference,Upa-Upasina,6.04419,28.7602,2286,7.94,0.06,0,421,0,0
+Ambitle,Extreme,Ambitle,3.1,30.0724,2315,7.677760124,0.15859,84.1414577,16231,4,1.920334131
+Ambitle,Reference,Ambitle,5.5,30.0724,2263,8.020403385,0.042821765,0,14660,0,0
+White Island North,Extreme,White Island North,1.64,17.33625,2266,7.54,0.105,100,,,
+White Island North,Reference,White Island North,3.83,17.33625,2267,7.977,0.057,0,,,
+White Island South,Extreme,White Island South,2.19,17.33625,2263,7.696,0.219,100,,,
+White Island South,Reference,White Island South,3.94,17.33625,2268,7.982,0.044,0,,,
