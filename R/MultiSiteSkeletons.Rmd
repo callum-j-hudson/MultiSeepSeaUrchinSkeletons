@@ -1,0 +1,7345 @@
+---
+title: "MultiSiteSkeletons"
+author: "Callum Hudson"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+library(ggsci)
+library(brms)
+library(bayesplot)
+library(gridExtra)
+library(grid)
+library(tidybayes)
+library(patchwork)
+library(seacarb)
+```
+
+
+```{r}
+skeleton_data <- read.csv("Data/SkeletonData.csv") %>% dplyr::select(Abs_lat, Genus, Species, SitePair, UrchinID, Condition, TestDiameter, ThicknessCT.um., Porosity, MgCO3, Spine_length, Spine_diameter, Spine_porosity, Jaw_length) %>%
+    rename(
+         Site = Condition) 
+
+
+
+environmental_data <- read.csv("Data/EnvData.csv")
+
+```
+
+# Calculate Omega Mg-Calcite
+```{r}
+# ==================================================
+# Mg-CALCITE SATURATION STATE
+# ==================================================
+
+environmental_data <- environmental_data %>%
+  rowwise() %>%
+  mutate(
+    median_omega_mg_calcite = Om(
+      x = 0.12786,
+      flag = 8,
+      var1 = median_pH,
+      var2 = median_TA / 1e6,
+      k1k2 = "l",
+      kf = "pf",
+      ks = "d",
+      pHscale = "T",
+      b = "u74"
+    )$OmegaMgCa_biogenic
+  ) %>%
+  ungroup()
+
+# Inspect results
+environmental_data %>%
+  select(
+    Analogue, Site, median_pH, median_TA,
+    median_omega_mg_calcite
+  ) %>%
+  print(n = Inf)
+```
+
+
+```{r}
+# ---- Merge EnvData and Skeletal Data ---- #
+dat_all <- skeleton_data %>%
+  left_join(
+    environmental_data,
+    by = c("SitePair", "Site")) %>%
+  mutate(
+    Biomineral       = 100 - Porosity,                  
+    Biomineral_z     = as.numeric(scale(Biomineral)),
+    Thickness_z      = as.numeric(scale(ThicknessCT.um.)),
+    SpineDia_z       = as.numeric(scale(Spine_diameter)),
+    SpineLen_z       = as.numeric(scale(Spine_length)),
+    SpinePor_z       = as.numeric(scale(Spine_porosity)),
+    SpineBiomineral  = 100 - Spine_porosity,
+    SpineBiomineral_z     = as.numeric(scale(SpineBiomineral)),
+    JawLen_z         = as.numeric(scale(Jaw_length)),
+    TestDiameter_z = as.numeric(scale(TestDiameter)),
+    pH_z = as.numeric(scale(median_pH)),
+    pH_var_z = as.numeric(scale(pH_var)),
+    Omega_z = as.numeric(scale(median_omega_mg_calcite)),
+    Omega_calc_z = as.numeric(scale(mean_omega_calcite)),
+    SitePair = factor(SitePair),
+    Analogue = factor(Analogue),
+    Genus    = factor(Genus)
+  )
+
+dat_all$SiteID <- interaction(dat_all$Analogue,
+                              dat_all$SitePair,
+                              dat_all$Site,
+                              drop = TRUE)
+```
+
+# pH models
+```{r}
+# ---- Full code for each, later using functions loop over traits ---- #
+
+# Test Biomineral
+model_biom_consistency <- brm(
+  Biomineral_z ~ scale(TestDiameter) + scale(median_pH) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99,
+                   max_treedepth = 15)
+)
+
+# Test Thickness
+model_thi_consistency <- brm(
+  Thickness_z ~ scale(TestDiameter) + scale(median_pH) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99,
+                   max_treedepth = 15)
+)
+
+# Jaw Length
+model_jaw_len_consistency <- brm(
+  JawLen_z ~ scale(TestDiameter) + scale(median_pH) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99,
+                   max_treedepth = 15)
+)
+
+# Spine Biomineral
+model_spine_por_consistency <- brm(
+  SpineBiomineral_z ~ scale(TestDiameter) + scale(median_pH) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99,
+                   max_treedepth = 15)
+)
+
+# Spine Thickness
+model_spine_dia_consistency <- brm(
+  SpineDia_z ~ scale(TestDiameter) + scale(median_pH) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99,
+                   max_treedepth = 15)
+)
+
+# Spine Length
+model_spine_len_consistency <- brm(
+  SpineLen_z ~ scale(TestDiameter) + scale(median_pH) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99,
+                   max_treedepth = 15)
+)
+
+# ---- Extract posterior draws for median pH ---- #
+get_pH_draws <- function(model, response_name) {
+  as_draws_df(model) %>%
+    select(b_scalemedian_pH) %>%   # correct column name from brms
+    mutate(response = response_name)
+}
+
+draws_all <- bind_rows(
+  get_pH_draws(model_biom_consistency,        "Test Biomineral (%)"),
+  get_pH_draws(model_thi_consistency,        "Test Thickness (µm)"),
+  get_pH_draws(model_spine_por_consistency,  "Spine Biomineral (%)"),
+  get_pH_draws(model_spine_dia_consistency,  "Spine Thickness (µm)"),
+  get_pH_draws(model_spine_len_consistency,  "Spine Length (mm)"),
+  get_pH_draws(model_jaw_len_consistency,    "Jaw Length (mm)")
+)
+
+# ---- Summarise posterior (median + 95% & 50% HDI) ---- #
+sum_95 <- draws_all %>%
+  group_by(response) %>%
+  median_hdi(b_scalemedian_pH, .width = 0.95) %>%
+  rename(
+    median      = b_scalemedian_pH,
+    hdi_95_low  = .lower,
+    hdi_95_high = .upper
+  )
+
+sum_50 <- draws_all %>%
+  group_by(response) %>%
+  median_hdi(b_scalemedian_pH, .width = 0.50) %>%
+  rename(
+    hdi_50_low  = .lower,
+    hdi_50_high = .upper
+  )
+
+effects_sum <- sum_95 %>%
+  left_join(sum_50, by = "response")
+
+effects_sum <- effects_sum %>%
+  mutate(
+    median_flip   = -median,
+    hdi_95_low_flip = -hdi_95_high,  
+    hdi_95_high_flip = -hdi_95_low,
+    hdi_50_low_flip  = -hdi_50_high,
+    hdi_50_high_flip = -hdi_50_low
+  ) %>%
+  mutate(
+    seg_color = case_when(
+      median_flip > 0 ~ "#ffc857ff",  
+      median_flip < 0 ~ "#9c7acfff",
+      TRUE            ~ "#ffc857ff"
+    ),
+    fill_color = case_when(
+      hdi_95_low_flip  > 0 ~ "#ffc857ff",
+      hdi_95_high_flip < 0 ~ "#9c7acfff",
+      TRUE                 ~ "#FFFFFF"
+    ),
+    response = factor(response, levels = c(
+      "Jaw Length (mm)",
+      "Spine Length (mm)",
+      "Spine Thickness (µm)",
+      "Spine Biomineral (%)",
+      "Test Thickness (µm)",
+      "Test Biomineral (%)"
+    ))
+  )
+
+# ---- Plot (flip x-axis to show decreasing pH) ---- #
+SiteEffects_pH <- ggplot(effects_sum, aes(x = median_flip, y = response)) +
+  geom_segment(
+    aes(x = hdi_95_low_flip, xend = hdi_95_high_flip, yend = response, color = seg_color),
+    linewidth = 0.6
+  ) +
+  geom_segment(
+    aes(x = hdi_50_low_flip, xend = hdi_50_high_flip, yend = response, color = seg_color),
+    linewidth = 2
+  ) +
+  geom_point(
+    aes(fill = fill_color),
+    shape = 21,
+    size = 5,
+    color = "black"
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.5) +
+  scale_color_identity() +
+  scale_fill_identity() +
+  labs(
+    x = expression("β (Median pH"[T]*")"),
+    y = ""
+  ) +
+  theme_classic(base_size = 16) +
+  theme(
+    panel.border = element_rect(fill = NA, color = "black"),
+    legend.position = "none"
+  )
+
+
+SiteEffects_pH
+
+ggsave(
+  "Figures/MainText/pH_MainEffect_plot.svg",
+  plot = SiteEffects_pH,
+  width = 6,
+  height = 4.5,
+  units = "in",
+  dpi = 300
+)
+
+```
+
+# R2 Statistics
+```{r}
+models <- list(
+  "Test Biomineral Content" = model_biom_consistency,
+  "Test Thickness" = model_thi_consistency,
+  "Jaw Length" = model_jaw_len_consistency,
+  "Spine Biomineral Content" = model_spine_por_consistency,
+  "Spine Thickness" = model_spine_dia_consistency,
+  "Spine Length" = model_spine_len_consistency
+)
+
+r2_results <- lapply(names(models), function(trait){
+  
+  r2 <- bayes_R2(models[[trait]])
+  
+  data.frame(
+    Trait = trait,
+    Estimate = r2[, "Estimate"],
+    Est_Error = r2[, "Est.Error"],
+    Q2.5 = r2[, "Q2.5"],
+    Q97.5 = r2[, "Q97.5"]
+  )
+})
+
+r2_results_pH_reduced_model <- dplyr::bind_rows(r2_results)
+
+r2_results_pH_reduced_model
+
+write.csv(r2_results_pH_reduced_model, "ResultsTables/r2_results_pH_reduced_model.csv", row.names = FALSE)
+```
+
+# Diagnostic plots for pH models
+```{r}
+color_scheme_set("purple")
+
+save_model_diagnostics <- function(model, model_name, folder){
+
+  
+  dir.create(folder, recursive = TRUE, showWarnings = FALSE)
+
+  
+  brms_plots <- plot(model)
+
+  posterior_hist  <- brms_plots[[1]]
+  posterior_trace <- brms_plots[[2]]
+
+  
+  pp <- pp_check(model) +
+    ggtitle("Posterior predictive check")
+
+  
+  combined <- arrangeGrob(
+    posterior_hist,
+    posterior_trace,
+    pp,
+    ncol = 1,
+    heights = c(1, 1, 1.1)
+  )
+
+  # Save to chosen folder
+  ggsave(
+    filename = paste0(folder, "/", model_name, "_ALL_diagnostics.png"),
+    plot = combined,
+    width = 10,
+    height = 16,
+    dpi = 300
+  )
+}
+
+models <- list(
+  "Test_Biomineral_Content" = model_biom_consistency,
+  "Test_Thickness" = model_thi_consistency,
+  "Jaw_Length" = model_jaw_len_consistency,
+  "Spine_Biomineral_Content" = model_spine_por_consistency,
+  "Spine_Thickness" = model_spine_dia_consistency,
+  "Spine_Length" = model_spine_len_consistency
+)
+
+invisible(
+  lapply(names(models), function(name){
+    save_model_diagnostics(models[[name]], name,
+                           "DiagnosticPlots/pH_models")
+  })
+)
+```
+
+# pH models but plotting Test Diameter effects
+```{r}
+# ---- Extract posterior draws for Test Diameter ---- #
+
+get_diameter_draws <- function(model, response_name) {
+  as_draws_df(model) %>%
+    select(b_scaleTestDiameter) %>%   
+    mutate(response = response_name)
+}
+
+draws_all_diameter <- bind_rows(
+  get_diameter_draws(model_biom_consistency,        "Test Biomineral (%)"),
+  get_diameter_draws(model_thi_consistency,         "Test Thickness (µm)"),
+  get_diameter_draws(model_spine_por_consistency,   "Spine Biomineral (%)"),
+  get_diameter_draws(model_spine_dia_consistency,   "Spine Thickness (µm)"),
+  get_diameter_draws(model_spine_len_consistency,   "Spine Length (mm)"),
+  get_diameter_draws(model_jaw_len_consistency,     "Jaw Length (mm)")
+)
+
+# ---- Plot ---- #
+sum_95_diameter <- draws_all_diameter %>%
+  group_by(response) %>%
+  median_hdi(b_scaleTestDiameter, .width = 0.95) %>%
+  rename(
+    median      = b_scaleTestDiameter,
+    hdi_95_low  = .lower,
+    hdi_95_high = .upper
+  )
+
+sum_50_diameter <- draws_all_diameter %>%
+  group_by(response) %>%
+  median_hdi(b_scaleTestDiameter, .width = 0.50) %>%
+  rename(
+    hdi_50_low  = .lower,
+    hdi_50_high = .upper
+  )
+
+effects_sum_diameter <- sum_95_diameter %>%
+  left_join(sum_50_diameter, by = "response")
+
+effects_sum_diameter <- effects_sum_diameter %>%
+  mutate(
+    seg_color = case_when(
+      median > 0 ~ "#ffc857ff",
+      median < 0 ~ "#9c7acfff",
+      TRUE       ~ "#ffc857ff"
+    ),
+    fill_color = case_when(
+      hdi_95_low  > 0 ~ "#ffc857ff",
+      hdi_95_high < 0 ~ "#9c7acfff",
+      TRUE            ~ "#FFFFFF"
+    ),
+    response = factor(response, levels = c(
+      "Jaw Length (mm)",
+      "Spine Length (mm)",
+      "Spine Thickness (µm)",
+      "Spine Biomineral (%)",
+      "Test Thickness (µm)",
+      "Test Biomineral (%)"
+    ))
+  )
+
+DiameterEffects <- ggplot(effects_sum_diameter, aes(x = median, y = response)) +
+  geom_segment(
+    aes(x = hdi_95_low, xend = hdi_95_high, yend = response, color = seg_color),
+    linewidth = 0.6
+  ) +
+  geom_segment(
+    aes(x = hdi_50_low, xend = hdi_50_high, yend = response, color = seg_color),
+    linewidth = 2
+  ) +
+  geom_point(
+    aes(fill = fill_color),
+    shape = 21,
+    size = 5,
+    color = "black"
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.5) +
+  scale_color_identity() +
+  scale_fill_identity() +
+  labs(
+    x = "β (Test Diameter)",
+    y = ""
+  ) +
+  theme_classic(base_size = 16) +
+  theme(
+    panel.border = element_rect(fill = NA, color = "black"),
+    legend.position = "none"
+  )
+
+DiameterEffects
+
+ggsave("Figures/MainText/Diameter_MainEffect_plot.svg",
+       plot = DiameterEffects,
+       width = 6, height = 4.5, units = "in", dpi = 300)
+```
+
+
+# Sensitivity analysis - pH models
+```{r}
+# ============================================================
+# SENSITIVITY ANALYSIS: EXCLUDING WHITE ISLAND / WHAKAARI
+# Outputs:
+#   1. Six refitted Bayesian models
+#   2. Posterior pH-effect summaries
+#   3. Forest plot of pH effects
+#   4. Bayesian R2 table
+#   5. Model diagnostic plots
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. Exclude White Island / Whakaari
+# ------------------------------------------------------------
+
+dat_no_whakaari <- dat_all %>%
+  filter(
+    !grepl(
+      "White Island|Whakaari",
+      as.character(Analogue),
+      ignore.case = TRUE
+    )
+  ) %>%
+  droplevels()
+
+
+# Check exclusions
+cat("Original observations:", nrow(dat_all), "\n")
+cat("Reduced observations:", nrow(dat_no_whakaari), "\n")
+cat(
+  "Observations excluded:",
+  nrow(dat_all) - nrow(dat_no_whakaari), "\n"
+)
+
+cat("\nRemaining analogues:\n")
+print(unique(dat_no_whakaari$Analogue))
+
+cat("\nExcluded analogues:\n")
+print(
+  unique(
+    dat_all$Analogue[
+      grepl(
+        "White Island|Whakaari",
+        as.character(dat_all$Analogue),
+        ignore.case = TRUE
+      )
+    ]
+  )
+)
+
+
+# ------------------------------------------------------------
+# 2. Re-standardise ALL variables using reduced dataset
+# ------------------------------------------------------------
+
+dat_no_whakaari <- dat_no_whakaari %>%
+  mutate(
+    # Skeletal response variables
+    Biomineral_z = as.numeric(scale(Biomineral)),
+    Thickness_z = as.numeric(scale(ThicknessCT.um.)),
+    JawLen_z = as.numeric(scale(Jaw_length)),
+    SpineBiomineral_z = as.numeric(scale(SpineBiomineral)),
+    SpineDia_z = as.numeric(scale(Spine_diameter)),
+    SpineLen_z = as.numeric(scale(Spine_length)),
+
+    # Predictor variables
+    median_pH_z = as.numeric(scale(median_pH)),
+    TestDiameter_z = as.numeric(scale(TestDiameter))
+  )
+
+
+# Check standardisation
+cat("\nStandardised variable means:\n")
+
+print(
+  dat_no_whakaari %>%
+    summarise(
+      across(
+        c(
+          Biomineral_z,
+          Thickness_z,
+          JawLen_z,
+          SpineBiomineral_z,
+          SpineDia_z,
+          SpineLen_z,
+          median_pH_z,
+          TestDiameter_z
+        ),
+        ~ mean(.x, na.rm = TRUE)
+      )
+    )
+)
+
+cat("\nStandardised variable SDs:\n")
+
+print(
+  dat_no_whakaari %>%
+    summarise(
+      across(
+        c(
+          Biomineral_z,
+          Thickness_z,
+          JawLen_z,
+          SpineBiomineral_z,
+          SpineDia_z,
+          SpineLen_z,
+          median_pH_z,
+          TestDiameter_z
+        ),
+        ~ sd(.x, na.rm = TRUE)
+      )
+    )
+)
+
+
+# ------------------------------------------------------------
+# 3. Fit six Bayesian models
+# ------------------------------------------------------------
+
+# Test Biomineral Content
+model_biom_consistency_no_whakaari <- brm(
+  Biomineral_z ~ TestDiameter_z + median_pH_z + pH_var_z +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_no_whakaari,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+
+# Test Thickness
+model_thi_consistency_no_whakaari <- brm(
+  Thickness_z ~ TestDiameter_z + median_pH_z + pH_var_z +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_no_whakaari,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+
+# Jaw Length
+model_jaw_len_consistency_no_whakaari <- brm(
+  JawLen_z ~ TestDiameter_z + median_pH_z + pH_var_z +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_no_whakaari,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+
+# Spine Biomineral Content
+model_spine_por_consistency_no_whakaari <- brm(
+  SpineBiomineral_z ~ TestDiameter_z + median_pH_z + pH_var_z +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_no_whakaari,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+
+# Spine Thickness
+model_spine_dia_consistency_no_whakaari <- brm(
+  SpineDia_z ~ TestDiameter_z + median_pH_z + pH_var_z +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_no_whakaari,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+
+# Spine Length
+model_spine_len_consistency_no_whakaari <- brm(
+  SpineLen_z ~ TestDiameter_z + median_pH_z + pH_var_z +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_no_whakaari,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+
+# ------------------------------------------------------------
+# 4. Extract posterior draws for pH effects
+# ------------------------------------------------------------
+
+get_pH_draws <- function(model, response_name) {
+
+  as_draws_df(model) %>%
+    select(b_median_pH_z) %>%
+    mutate(response = response_name)
+
+}
+
+
+draws_all_no_whakaari <- bind_rows(
+
+  get_pH_draws(
+    model_biom_consistency_no_whakaari,
+    "Test Biomineral Content"
+  ),
+
+  get_pH_draws(
+    model_thi_consistency_no_whakaari,
+    "Test Thickness"
+  ),
+
+  get_pH_draws(
+    model_jaw_len_consistency_no_whakaari,
+    "Jaw Length"
+  ),
+
+  get_pH_draws(
+    model_spine_por_consistency_no_whakaari,
+    "Spine Biomineral Content"
+  ),
+
+  get_pH_draws(
+    model_spine_dia_consistency_no_whakaari,
+    "Spine Thickness"
+  ),
+
+  get_pH_draws(
+    model_spine_len_consistency_no_whakaari,
+    "Spine Length"
+  )
+
+)
+
+
+# ------------------------------------------------------------
+# 5. Summarise posterior pH effects
+# ------------------------------------------------------------
+
+# 95% HDI
+sum_95_no_whakaari <- draws_all_no_whakaari %>%
+  group_by(response) %>%
+  median_hdi(b_median_pH_z, .width = 0.95) %>%
+  rename(
+    median = b_median_pH_z,
+    hdi_95_low = .lower,
+    hdi_95_high = .upper
+  )
+
+
+# 50% HDI
+sum_50_no_whakaari <- draws_all_no_whakaari %>%
+  group_by(response) %>%
+  median_hdi(b_median_pH_z, .width = 0.50) %>%
+  rename(
+    hdi_50_low = .lower,
+    hdi_50_high = .upper
+  )
+
+
+# Combine summaries
+effects_sum_no_whakaari <- sum_95_no_whakaari %>%
+  select(
+    response,
+    median,
+    hdi_95_low,
+    hdi_95_high
+  ) %>%
+  left_join(
+    sum_50_no_whakaari %>%
+      select(
+        response,
+        hdi_50_low,
+        hdi_50_high
+      ),
+    by = "response"
+  )
+
+
+# ------------------------------------------------------------
+# 6. Prepare effect directions and plot colours
+# ------------------------------------------------------------
+
+effects_sum_no_whakaari <- effects_sum_no_whakaari %>%
+  mutate(
+    median_flip = -median,
+    hdi_95_low_flip = -hdi_95_high,
+    hdi_95_high_flip = -hdi_95_low,
+    hdi_50_low_flip = -hdi_50_high,
+    hdi_50_high_flip = -hdi_50_low
+  ) %>%
+  mutate(
+    seg_color = case_when(
+      median_flip > 0 ~ "#ffc857ff",
+      median_flip < 0 ~ "#9c7acfff",
+      TRUE ~ "#ffc857ff"
+    ),
+    fill_color = case_when(
+      hdi_95_low_flip > 0 ~ "#ffc857ff",
+      hdi_95_high_flip < 0 ~ "#9c7acfff",
+      TRUE ~ "#FFFFFF"
+    ),
+    response = recode(
+      response,
+      "Test Biomineral Content" = "Test Biomineral (%)",
+      "Test Thickness" = "Test Thickness (µm)",
+      "Jaw Length" = "Jaw Length (mm)",
+      "Spine Biomineral Content" = "Spine Biomineral (%)",
+      "Spine Thickness" = "Spine Thickness (µm)",
+      "Spine Length" = "Spine Length (mm)"
+    ),
+    response = factor(
+      response,
+      levels = c(
+        "Jaw Length (mm)",
+        "Spine Length (mm)",
+        "Spine Thickness (µm)",
+        "Spine Biomineral (%)",
+        "Test Thickness (µm)",
+        "Test Biomineral (%)"
+      )
+    )
+  )
+
+
+# ------------------------------------------------------------
+# 7. Plot posterior pH effects
+# ------------------------------------------------------------
+
+SiteEffects_pH_no_whakaari <- ggplot(
+  effects_sum_no_whakaari,
+  aes(x = median_flip, y = response)
+) +
+
+  geom_segment(
+    aes(
+      x = hdi_95_low_flip,
+      xend = hdi_95_high_flip,
+      yend = response,
+      color = seg_color
+    ),
+    linewidth = 0.6
+  ) +
+
+  geom_segment(
+    aes(
+      x = hdi_50_low_flip,
+      xend = hdi_50_high_flip,
+      yend = response,
+      color = seg_color
+    ),
+    linewidth = 2
+  ) +
+
+  geom_point(
+    aes(fill = fill_color),
+    shape = 21,
+    size = 5,
+    color = "black"
+  ) +
+
+  geom_vline(
+    xintercept = 0,
+    linetype = "dashed",
+    linewidth = 0.5
+  ) +
+
+  scale_color_identity() +
+  scale_fill_identity() +
+
+  labs(
+    x = expression("β (Median pH"[T]*")"),
+    y = ""
+  ) +
+
+  theme_classic(base_size = 16) +
+
+  theme(
+    panel.border = element_rect(
+      fill = NA,
+      color = "black"
+    ),
+    legend.position = "none"
+  )
+
+
+# Display plot
+print(SiteEffects_pH_no_whakaari)
+
+
+# ------------------------------------------------------------
+# 8. Save posterior effect plot
+# ------------------------------------------------------------
+
+dir.create(
+  "Figures/Supplementary",
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+ggsave(
+  filename = paste0(
+    "Figures/Supplementary/",
+    "pH_MainEffect_plot_excluding_WhiteIsland.svg"
+  ),
+  plot = SiteEffects_pH_no_whakaari,
+  width = 6,
+  height = 4.5,
+  device = "svg"
+)
+
+
+# ------------------------------------------------------------
+# 9. Calculate Bayesian R2
+# ------------------------------------------------------------
+
+models_no_whakaari <- list(
+
+  "Test Biomineral Content" =
+    model_biom_consistency_no_whakaari,
+
+  "Test Thickness" =
+    model_thi_consistency_no_whakaari,
+
+  "Jaw Length" =
+    model_jaw_len_consistency_no_whakaari,
+
+  "Spine Biomineral Content" =
+    model_spine_por_consistency_no_whakaari,
+
+  "Spine Thickness" =
+    model_spine_dia_consistency_no_whakaari,
+
+  "Spine Length" =
+    model_spine_len_consistency_no_whakaari
+
+)
+
+
+r2_results_no_whakaari <- lapply(
+  names(models_no_whakaari),
+  function(trait) {
+
+    r2 <- bayes_R2(models_no_whakaari[[trait]])
+
+    data.frame(
+      Trait = trait,
+      Estimate = r2[, "Estimate"],
+      Est_Error = r2[, "Est.Error"],
+      Q2.5 = r2[, "Q2.5"],
+      Q97.5 = r2[, "Q97.5"]
+    )
+
+  }
+)
+
+
+r2_results_pH_no_whakaari <- bind_rows(
+  r2_results_no_whakaari
+)
+
+
+# Display R2 results
+print(r2_results_pH_no_whakaari)
+
+
+# Save R2 results
+write.csv(
+  r2_results_pH_no_whakaari,
+  "ResultsTables/r2_results_pH_excluding_WhiteIsland.csv",
+  row.names = FALSE
+)
+
+
+# ------------------------------------------------------------
+# 10. Save model diagnostics
+# ------------------------------------------------------------
+
+color_scheme_set("purple")
+
+
+save_model_diagnostics <- function(
+  model,
+  model_name,
+  folder
+) {
+
+  dir.create(
+    folder,
+    recursive = TRUE,
+    showWarnings = FALSE
+  )
+
+  brms_plots <- plot(model)
+
+  posterior_hist <- brms_plots[[1]]
+  posterior_trace <- brms_plots[[2]]
+
+  pp <- pp_check(model) +
+    ggtitle("Posterior predictive check")
+
+  combined <- arrangeGrob(
+    posterior_hist,
+    posterior_trace,
+    pp,
+    ncol = 1,
+    heights = c(1, 1, 1.1)
+  )
+
+  ggsave(
+    filename = paste0(
+      folder,
+      "/",
+      model_name,
+      "_ALL_diagnostics.png"
+    ),
+    plot = combined,
+    width = 10,
+    height = 16,
+    dpi = 300
+  )
+
+}
+
+
+# Save diagnostics for all six models
+invisible(
+  lapply(
+    names(models_no_whakaari),
+    function(name) {
+
+      save_model_diagnostics(
+        models_no_whakaari[[name]],
+        name,
+        "DiagnosticPlots/pH_models/NoWhiteIsland"
+      )
+
+    }
+  )
+)
+
+
+# ------------------------------------------------------------
+# 11. Save posterior effect summaries
+# ------------------------------------------------------------
+
+write.csv(
+  effects_sum_no_whakaari,
+  "ResultsTables/pH_effects_excluding_WhiteIsland.csv",
+  row.names = FALSE
+)
+
+
+# ------------------------------------------------------------
+# 12. Print final results
+# ------------------------------------------------------------
+
+cat("\n\n============================================\n")
+cat("SENSITIVITY ANALYSIS: EXCLUDING WHITE ISLAND\n")
+cat("============================================\n\n")
+
+cat("Posterior pH-effect summaries:\n")
+print(effects_sum_no_whakaari)
+
+cat("\nBayesian R2 results:\n")
+print(r2_results_pH_no_whakaari)
+
+```
+
+
+# pH variability (IQR) models
+```{r}
+# ---- Full code for each, later using functions loop over traits ---- #
+
+# Test Biomineral
+model_biom_pH_var <- brm(
+  Biomineral_z ~ scale(TestDiameter) + scale(pH_var) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99,
+                   max_treedepth = 15)
+)
+
+# Test Thickness
+model_thi_pH_var <- brm(
+  Thickness_z ~ scale(TestDiameter) + scale(pH_var) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99,
+                   max_treedepth = 15)
+)
+
+# Jaw Length
+model_jaw_len_pH_var <- brm(
+  JawLen_z ~ scale(TestDiameter) + scale(pH_var) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99,
+                   max_treedepth = 15)
+)
+
+# Spine Biomineral
+model_spine_por_pH_var <- brm(
+  SpineBiomineral_z ~ scale(TestDiameter) + scale(pH_var) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99,
+                   max_treedepth = 15)
+)
+
+# Spine Thickness
+model_spine_dia_pH_var <- brm(
+  SpineDia_z ~ scale(TestDiameter) + scale(pH_var) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99,
+                   max_treedepth = 15)
+)
+
+# Spine Length
+model_spine_len_pH_var <- brm(
+  SpineLen_z ~ scale(TestDiameter) + scale(pH_var) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99,
+                   max_treedepth = 15)
+)
+
+# ---- Extract posterior draws for median pH ---- #
+get_pH_draws <- function(model, response_name) {
+  as_draws_df(model) %>%
+    select(b_scalepH_var) %>%   # correct column name from brms
+    mutate(response = response_name)
+}
+
+draws_all <- bind_rows(
+  get_pH_draws(model_biom_pH_var,        "Test Biomineral (%)"),
+  get_pH_draws(model_thi_pH_var,        "Test Thickness (µm)"),
+  get_pH_draws(model_spine_por_pH_var,  "Spine Biomineral (%)"),
+  get_pH_draws(model_spine_dia_pH_var,  "Spine Thickness (µm)"),
+  get_pH_draws(model_spine_len_pH_var,  "Spine Length (mm)"),
+  get_pH_draws(model_jaw_len_pH_var,    "Jaw Length (mm)")
+)
+
+# ---- Summarise posterior (median + 95% & 50% HDI) ---- #
+sum_95 <- draws_all %>%
+  group_by(response) %>%
+  median_hdi(b_scalepH_var, .width = 0.95) %>%
+  rename(
+    median      = b_scalepH_var,
+    hdi_95_low  = .lower,
+    hdi_95_high = .upper
+  )
+
+sum_50 <- draws_all %>%
+  group_by(response) %>%
+  median_hdi(b_scalepH_var, .width = 0.50) %>%
+  rename(
+    hdi_50_low  = .lower,
+    hdi_50_high = .upper
+  )
+
+effects_sum <- sum_95 %>%
+  left_join(sum_50, by = "response") %>%
+  mutate(
+    seg_color = case_when(
+      median > 0 ~ "#ffc857ff",
+      median < 0 ~ "#9c7acfff",
+      TRUE       ~ "#ffc857ff"
+    ),
+    fill_color = case_when(
+      hdi_95_low > 0 ~ "#ffc857ff",
+      hdi_95_high < 0 ~ "#9c7acfff",
+      TRUE            ~ "#FFFFFF"
+    ),
+    response = factor(response, levels = c(
+      "Jaw Length (mm)",
+      "Spine Length (mm)",
+      "Spine Thickness (µm)",
+      "Spine Biomineral (%)",
+      "Test Thickness (µm)",
+      "Test Biomineral (%)"
+    ))
+  )
+
+# ---- Plot (flip x-axis to show decreasing pH) ---- #
+SiteEffects_pH_var <- ggplot(
+  effects_sum,
+  aes(x = median, y = response)
+) +
+  geom_segment(
+    aes(
+      x = hdi_95_low,
+      xend = hdi_95_high,
+      yend = response,
+      color = seg_color
+    ),
+    linewidth = 0.6
+  ) +
+  geom_segment(
+    aes(
+      x = hdi_50_low,
+      xend = hdi_50_high,
+      yend = response,
+      color = seg_color
+    ),
+    linewidth = 2
+  ) +
+  geom_point(
+    aes(fill = fill_color),
+    shape = 21,
+    size = 5,
+    color = "black"
+  ) +
+  geom_vline(
+    xintercept = 0,
+    linetype = "dashed",
+    linewidth = 0.5
+  ) +
+  scale_color_identity() +
+  scale_fill_identity() +
+  labs(
+    x = expression("β (pH"[T]*" variability)"),
+    y = ""
+  ) +
+  theme_classic(base_size = 16) +
+  theme(
+    panel.border = element_rect(fill = NA, color = "black"),
+    legend.position = "none"
+  )
+
+SiteEffects_pH_var
+
+ggsave(
+  "Figures/Supplementary/pH_var_MainEffect_plot.svg",
+  plot = SiteEffects_pH_var,
+  width = 6,
+  height = 4.5,
+  units = "in",
+  dpi = 300
+)
+
+```
+
+```{r}
+# R2 Statistics
+
+models <- list(
+  "Test Biomineral Content" = model_biom_pH_var,
+  "Test Thickness" = model_thi_pH_var,
+  "Jaw Length" = model_jaw_len_pH_var,
+  "Spine Biomineral Content" = model_spine_por_pH_var,
+  "Spine Thickness" = model_spine_dia_pH_var,
+  "Spine Length" = model_spine_len_pH_var
+)
+
+r2_results <- lapply(names(models), function(trait){
+  
+  r2 <- bayes_R2(models[[trait]])
+  
+  data.frame(
+    Trait = trait,
+    Estimate = r2[, "Estimate"],
+    Est_Error = r2[, "Est.Error"],
+    Q2.5 = r2[, "Q2.5"],
+    Q97.5 = r2[, "Q97.5"]
+  )
+})
+
+r2_results_ph_var_model <- dplyr::bind_rows(r2_results)
+
+write.csv(r2_results_ph_var_model, "ResultsTables/r2_results_ph_var_model.csv", row.names = FALSE)
+```
+
+# Diagnostic plots
+```{r}
+models <- list(
+  "Test Biomineral Content" = model_biom_pH_var,
+  "Test Thickness" = model_thi_pH_var,
+  "Jaw Length" = model_jaw_len_pH_var,
+  "Spine Biomineral Content" = model_spine_por_pH_var,
+  "Spine Thickness" = model_spine_dia_pH_var,
+  "Spine Length" = model_spine_len_pH_var
+)
+
+invisible(
+  lapply(names(models), function(name){
+    save_model_diagnostics(models[[name]], name,
+                           "DiagnosticPlots/pH_var_models")
+  })
+)
+```
+
+
+# pH plots: median pH + pH variability (IQR)
+```{r}
+exposure_units <- environmental_data %>%
+  distinct(Analogue, SitePair, Site, median_pH, pH_var)
+
+# Correlation across unique exposure units
+cor(
+  exposure_units$median_pH,
+  exposure_units$pH_var,
+  use = "complete.obs",
+  method = "pearson"
+)
+
+
+# ==================================================
+# MODELS: MEDIAN pHT + pHT VARIABILITY
+# ==================================================
+
+# Test Biomineral
+model_biom_pH_med_var <- brm(
+  Biomineral_z ~ scale(TestDiameter) +
+    scale(median_pH) + scale(pH_var) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99,
+                 max_treedepth = 15)
+)
+
+# Test Thickness
+model_thi_pH_med_var <- brm(
+  Thickness_z ~ scale(TestDiameter) +
+    scale(median_pH) + scale(pH_var) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99,
+                 max_treedepth = 15)
+)
+
+# Jaw Length
+model_jaw_len_pH_med_var <- brm(
+  JawLen_z ~ scale(TestDiameter) +
+    scale(median_pH) + scale(pH_var) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99,
+                 max_treedepth = 15)
+)
+
+# Spine Biomineral
+model_spine_por_pH_med_var <- brm(
+  SpineBiomineral_z ~ scale(TestDiameter) +
+    scale(median_pH) + scale(pH_var) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99,
+                 max_treedepth = 15)
+)
+
+# Spine Thickness
+model_spine_dia_pH_med_var <- brm(
+  SpineDia_z ~ scale(TestDiameter) +
+    scale(median_pH) + scale(pH_var) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99,
+                 max_treedepth = 15)
+)
+
+# Spine Length
+model_spine_len_pH_med_var <- brm(
+  SpineLen_z ~ scale(TestDiameter) +
+    scale(median_pH) + scale(pH_var) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99,
+                 max_treedepth = 15)
+)
+
+
+# ==================================================
+# EXTRACT POSTERIOR DRAWS FOR pHT IQR EFFECT
+# ==================================================
+
+get_pH_med_var_draws <- function(model, response_name) {
+
+  as_draws_df(model) %>%
+    select(b_scalepH_var) %>%
+    mutate(response = response_name)
+}
+
+draws_pH_med_var <- bind_rows(
+  get_pH_med_var_draws(
+    model_biom_pH_med_var, "Test Biomineral (%)"
+  ),
+  get_pH_med_var_draws(
+    model_thi_pH_med_var, "Test Thickness (µm)"
+  ),
+  get_pH_med_var_draws(
+    model_spine_por_pH_med_var, "Spine Biomineral (%)"
+  ),
+  get_pH_med_var_draws(
+    model_spine_dia_pH_med_var, "Spine Thickness (µm)"
+  ),
+  get_pH_med_var_draws(
+    model_spine_len_pH_med_var, "Spine Length (mm)"
+  ),
+  get_pH_med_var_draws(
+    model_jaw_len_pH_med_var, "Jaw Length (mm)"
+  )
+)
+
+
+# ==================================================
+# SUMMARISE POSTERIOR (MEDIAN + 95% & 50% HDI)
+# ==================================================
+
+sum_95_pH_med_var <- draws_pH_med_var %>%
+  group_by(response) %>%
+  median_hdi(b_scalepH_var, .width = 0.95) %>%
+  rename(
+    median      = b_scalepH_var,
+    hdi_95_low  = .lower,
+    hdi_95_high = .upper
+  )
+
+sum_50_pH_med_var <- draws_pH_med_var %>%
+  group_by(response) %>%
+  median_hdi(b_scalepH_var, .width = 0.50) %>%
+  rename(
+    hdi_50_low  = .lower,
+    hdi_50_high = .upper
+  )
+
+effects_sum_pH_med_var <- sum_95_pH_med_var %>%
+  left_join(sum_50_pH_med_var, by = "response") %>%
+  mutate(
+    seg_color = case_when(
+      median > 0 ~ "#ffc857ff",
+      median < 0 ~ "#9c7acfff",
+      TRUE       ~ "#ffc857ff"
+    ),
+    fill_color = case_when(
+      hdi_95_low > 0  ~ "#ffc857ff",
+      hdi_95_high < 0 ~ "#9c7acfff",
+      TRUE            ~ "#FFFFFF"
+    ),
+    response = factor(response, levels = c(
+      "Jaw Length (mm)",
+      "Spine Length (mm)",
+      "Spine Thickness (µm)",
+      "Spine Biomineral (%)",
+      "Test Thickness (µm)",
+      "Test Biomineral (%)"
+    ))
+  )
+
+
+# ==================================================
+# PLOT: CONDITIONAL EFFECT OF pHT VARIABILITY
+# ==================================================
+
+SiteEffects_pH_med_var <- ggplot(
+  effects_sum_pH_med_var,
+  aes(x = median, y = response)
+) +
+
+  # 95% HDI
+  geom_segment(
+    aes(
+      x = hdi_95_low,
+      xend = hdi_95_high,
+      yend = response,
+      color = seg_color
+    ),
+    linewidth = 0.6
+  ) +
+
+  # 50% HDI
+  geom_segment(
+    aes(
+      x = hdi_50_low,
+      xend = hdi_50_high,
+      yend = response,
+      color = seg_color
+    ),
+    linewidth = 2
+  ) +
+
+  # Posterior median
+  geom_point(
+    aes(fill = fill_color),
+    shape = 21,
+    size = 5,
+    color = "black"
+  ) +
+
+  # Zero effect
+  geom_vline(
+    xintercept = 0,
+    linetype = "dashed",
+    linewidth = 0.5
+  ) +
+
+  scale_color_identity() +
+  scale_fill_identity() +
+
+  labs(
+    x = expression("β (pH"[T] ~ "variability | median pH"[T]*")"),
+    y = ""
+  ) +
+
+  theme_classic(base_size = 16) +
+
+  theme(
+    panel.border = element_rect(
+      fill = NA,
+      color = "black"
+    ),
+    legend.position = "none"
+  )
+
+SiteEffects_pH_med_var
+
+
+# ==================================================
+# SAVE FIGURE
+# ==================================================
+
+ggsave(
+  "Figures/Supplementary/pH_med_var_MainEffect_plot.svg",
+  plot = SiteEffects_pH_med_var,
+  width = 6,
+  height = 4.5,
+  units = "in",
+  dpi = 300
+)
+
+```
+
+# Plot results for all predictors (Test Diameter, median pH, pH variability)
+```{r}
+
+# ============================================================
+# EXTRACT POSTERIOR DRAWS FOR ALL THREE PREDICTORS
+# ============================================================
+# ------------------------------------------------------------
+# 1. Collect models
+# ------------------------------------------------------------
+
+models_pH_med_var <- list(
+  "Test Biomineral (%)" = model_biom_pH_med_var,
+  "Test Thickness (µm)" = model_thi_pH_med_var,
+  "Spine Biomineral (%)" = model_spine_por_pH_med_var,
+  "Spine Thickness (µm)" = model_spine_dia_pH_med_var,
+  "Spine Length (mm)" = model_spine_len_pH_med_var,
+  "Jaw Length (mm)" = model_jaw_len_pH_med_var
+)
+
+response_order <- c(
+  "Jaw Length (mm)",
+  "Spine Length (mm)",
+  "Spine Thickness (µm)",
+  "Spine Biomineral (%)",
+  "Test Thickness (µm)",
+  "Test Biomineral (%)"
+)
+
+
+# ------------------------------------------------------------
+# 2. Extract posterior draws
+# ------------------------------------------------------------
+
+get_effect_draws <- function(model_list, parameter, predictor) {
+
+  bind_rows(
+    lapply(names(model_list), function(response_name) {
+
+      draws <- as_draws_df(model_list[[response_name]])
+
+      tibble(
+        effect = draws[[parameter]],
+        response = response_name,
+        predictor = predictor
+      )
+
+    })
+  )
+}
+
+
+# Extract test diameter
+
+draws_test_diameter <- get_effect_draws(
+  models_pH_med_var,
+  "b_scaleTestDiameter",
+  "Test diameter"
+)
+
+
+# Extract median pHT and reverse coefficient signs
+# Positive values now represent higher trait values
+# associated with decreasing median pHT.
+
+draws_median_pH <- get_effect_draws(
+  models_pH_med_var,
+  "b_scalemedian_pH",
+  "Decreasing median pHT"
+) %>%
+  mutate(effect = -effect)
+
+
+# Extract pHT variability (conditional on median pHT)
+
+draws_pH_var <- get_effect_draws(
+  models_pH_med_var,
+  "b_scalepH_var",
+  "pHT variability"
+)
+
+
+# Combine all three predictors
+
+draws_all_effects <- bind_rows(
+  draws_test_diameter,
+  draws_median_pH,
+  draws_pH_var
+)
+
+
+# ------------------------------------------------------------
+# 3. Summarise posterior distributions
+# ------------------------------------------------------------
+
+effects_summary <- draws_all_effects %>%
+  group_by(predictor, response) %>%
+  median_hdi(
+    effect,
+    .width = c(0.95, 0.50)
+  ) %>%
+  ungroup()
+
+
+# Separate 95% and 50% HDIs
+
+effects_95 <- effects_summary %>%
+  filter(.width == 0.95) %>%
+  select(
+    predictor,
+    response,
+    median = effect,
+    hdi_95_low = .lower,
+    hdi_95_high = .upper
+  )
+
+effects_50 <- effects_summary %>%
+  filter(.width == 0.50) %>%
+  select(
+    predictor,
+    response,
+    hdi_50_low = .lower,
+    hdi_50_high = .upper
+  )
+
+
+# Combine summaries and assign colours
+
+effects_plot_data <- effects_95 %>%
+  left_join(
+    effects_50,
+    by = c("predictor", "response")
+  ) %>%
+  mutate(
+    response = factor(
+      response,
+      levels = response_order
+    ),
+
+    predictor = factor(
+      predictor,
+      levels = c(
+        "Test diameter",
+        "Decreasing median pHT",
+        "pHT variability"
+      )
+    ),
+
+    # Colour based on posterior median
+
+    seg_color = case_when(
+      median > 0 ~ "#ffc857ff",
+      median < 0 ~ "#9c7acfff",
+      TRUE ~ "#ffc857ff"
+    ),
+
+    # White points where 95% HDI overlaps zero
+
+    fill_color = case_when(
+      hdi_95_low > 0 ~ "#ffc857ff",
+      hdi_95_high < 0 ~ "#9c7acfff",
+      TRUE ~ "#FFFFFF"
+    )
+  )
+
+
+# ------------------------------------------------------------
+# 4. Function to generate each coefficient panel
+# ------------------------------------------------------------
+
+plot_effect_panel <- function(data, predictor, x_label) {
+
+  ggplot(
+    filter(data, as.character(predictor) == !!predictor),
+    aes(x = median, y = response)
+  ) +
+    geom_segment(
+      aes(
+        x = hdi_95_low,
+        xend = hdi_95_high,
+        yend = response,
+        color = seg_color
+      ),
+      linewidth = 0.6
+    ) +
+    geom_segment(
+      aes(
+        x = hdi_50_low,
+        xend = hdi_50_high,
+        yend = response,
+        color = seg_color
+      ),
+      linewidth = 2
+    ) +
+    geom_point(
+      aes(fill = fill_color),
+      shape = 21,
+      size = 5,
+      color = "black"
+    ) +
+    geom_vline(
+      xintercept = 0,
+      linetype = "dashed",
+      linewidth = 0.5
+    ) +
+    scale_color_identity() +
+    scale_fill_identity() +
+    labs(
+      x = x_label,
+      y = ""
+    ) +
+    theme_classic(base_size = 16) +
+    theme(
+      panel.border = element_rect(
+        fill = NA,
+        color = "black"
+      ),
+      legend.position = "none"
+    )
+}
+
+
+# ------------------------------------------------------------
+# 5. Generate three panels
+# ------------------------------------------------------------
+
+plot_test_diameter <- plot_effect_panel(
+  effects_plot_data,
+  "Test diameter",
+  expression(beta ~ "(Test diameter)")
+)
+
+plot_median_pH <- plot_effect_panel(
+  effects_plot_data,
+  "Decreasing median pHT",
+  expression(beta ~ "(Median pH"[T]*")")
+)
+
+plot_pH_var <- plot_effect_panel(
+  effects_plot_data,
+  "pHT variability",
+  expression(beta ~ "(pH"[T] ~ "variability)")
+)
+
+
+# ------------------------------------------------------------
+# 6. Combine using patchwork
+# ------------------------------------------------------------
+
+combined_effects_plot <- (
+  plot_test_diameter +
+  plot_median_pH +
+  plot_pH_var
+) +
+  plot_layout(
+    ncol = 3,
+    widths = c(1, 1, 1)
+  ) +
+  plot_annotation(
+    tag_levels = "A"
+  )
+
+
+combined_effects_plot
+
+
+# ------------------------------------------------------------
+# 7. Save figure
+# ------------------------------------------------------------
+
+ggsave(
+  "Figures/MainText/pH_med_var_ThreePredictorEffects.svg",
+  plot = combined_effects_plot,
+  width = 18,
+  height = 4.5,
+  units = "in",
+  dpi = 300
+)
+
+```
+# Extract results
+```{r}
+# R2 Statistics
+
+models <- list(
+  "Test Biomineral (%)" = model_biom_pH_med_var,
+  "Test Thickness (µm)" = model_thi_pH_med_var,
+  "Spine Biomineral (%)" = model_spine_por_pH_med_var,
+  "Spine Thickness (µm)" = model_spine_dia_pH_med_var,
+  "Spine Length (mm)" = model_spine_len_pH_med_var,
+  "Jaw Length (mm)" = model_jaw_len_pH_med_var
+)
+
+r2_results <- lapply(names(models), function(trait){
+  
+  r2 <- bayes_R2(models[[trait]])
+  
+  data.frame(
+    Trait = trait,
+    Estimate = r2[, "Estimate"],
+    Est_Error = r2[, "Est.Error"],
+    Q2.5 = r2[, "Q2.5"],
+    Q97.5 = r2[, "Q97.5"]
+  )
+})
+
+r2_results_ph_med_var_model <- dplyr::bind_rows(r2_results)
+
+write.csv(r2_results_ph_med_var_model, "ResultsTables/r2_results_ph_med_var_model.csv", row.names = FALSE)
+```
+
+# Summarise posterior estimates
+```{r}
+
+# ==================================================
+# EXTRACT POSTERIOR DRAWS FOR ALL THREE PREDICTORS
+# EFFECTS REPORTED IN ORIGINAL TRAIT UNITS
+# ==================================================
+
+# ==================================================
+# 1. DEFINE MODELS
+# ==================================================
+
+models_pH_med_var_original <- list(
+  "Test biomineral (%)" = model_biom_pH_med_var,
+  "Test thickness (µm)" = model_thi_pH_med_var,
+  "Jaw length (mm)" = model_jaw_len_pH_med_var,
+  "Spine biomineral (%)" = model_spine_por_pH_med_var,
+  "Spine thickness (µm)" = model_spine_dia_pH_med_var,
+  "Spine length (mm)" = model_spine_len_pH_med_var
+)
+
+
+# ==================================================
+# 2. DEFINE ORIGINAL TRAIT VARIABLES
+# ==================================================
+
+trait_variables_original <- c(
+  "Test biomineral (%)" = "Biomineral",
+  "Test thickness (µm)" = "ThicknessCT.um.",
+  "Jaw length (mm)" = "Jaw_length",
+  "Spine biomineral (%)" = "SpineBiomineral",
+  "Spine thickness (µm)" = "Spine_diameter",
+  "Spine length (mm)" = "Spine_length"
+)
+
+
+# ==================================================
+# 3. DEFINE STANDARDISED RESPONSE VARIABLES
+# ==================================================
+
+response_variables_z <- c(
+  "Test biomineral (%)" = "Biomineral_z",
+  "Test thickness (µm)" = "Thickness_z",
+  "Jaw length (mm)" = "JawLen_z",
+  "Spine biomineral (%)" = "SpineBiomineral_z",
+  "Spine thickness (µm)" = "SpineDia_z",
+  "Spine length (mm)" = "SpineLen_z"
+)
+
+
+# ==================================================
+# 4. CALCULATE ORIGINAL TRAIT SDs
+# ==================================================
+
+trait_sd_original <- sapply(
+  trait_variables_original,
+  function(trait) {
+    sd(dat_all[[trait]], na.rm = TRUE)
+  }
+)
+
+# Convert spine diameter SD from mm to µm
+trait_sd_original["Spine thickness (µm)"] <-
+  trait_sd_original["Spine thickness (µm)"] * 1000
+
+trait_sd_original
+
+
+# ==================================================
+# 5. VERIFY RESPONSE STANDARDISATION
+# ==================================================
+# The z-responses should have SD approximately 1.
+# Their original-scale SDs must correspond to the
+# raw trait SDs used during standardisation.
+
+response_sd_z <- sapply(
+  response_variables_z,
+  function(response) {
+    sd(dat_all[[response]], na.rm = TRUE)
+  }
+)
+
+print(response_sd_z)
+
+# Stop if response variables are not properly standardised
+if (any(abs(response_sd_z - 1) > 0.01)) {
+  warning(
+    "At least one response variable is not standardised ",
+    "to SD approximately 1. Check the response scaling."
+  )
+}
+
+
+# ==================================================
+# 6. DEFINE MODEL PARAMETERS
+# ==================================================
+
+parameters_pH_med_var_original <- c(
+  "b_scaleTestDiameter" = "Test diameter",
+  "b_scalemedian_pH" = "Decreasing median pHT",
+  "b_scalepH_var" = "pHT variability"
+)
+
+
+# ==================================================
+# 7. EXTRACT POSTERIOR DRAWS
+#    AND BACK-TRANSFORM TO ORIGINAL TRAIT UNITS
+# ==================================================
+
+extract_all_draws_original <- function(
+    model,
+    response_name
+) {
+
+  draws <- as_draws_df(model)
+
+  # SD of original response in final reporting units
+  response_sd <- trait_sd_original[[response_name]]
+
+  bind_rows(
+    lapply(
+      names(parameters_pH_med_var_original),
+      function(param) {
+
+        effect <- draws[[param]]
+
+        # Reverse median pHT coefficient
+        # to represent decreasing median pHT
+        if (param == "b_scalemedian_pH") {
+          effect <- -effect
+        }
+
+        # Convert standardised response effect
+        # into original trait measurement units
+        effect_original <- effect * response_sd
+
+        tibble(
+          response = response_name,
+          predictor =
+            parameters_pH_med_var_original[[param]],
+          effect = effect_original
+        )
+
+      }
+    )
+  )
+}
+
+
+# ==================================================
+# 8. EXTRACT DRAWS FROM ALL SIX MODELS
+# ==================================================
+
+draws_all_pH_med_var_original <- bind_rows(
+
+  lapply(
+    names(models_pH_med_var_original),
+
+    function(response_name) {
+
+      extract_all_draws_original(
+        models_pH_med_var_original[[response_name]],
+        response_name
+      )
+
+    }
+  )
+
+)
+
+
+# ==================================================
+# 9. SUMMARISE POSTERIOR
+#    MEAN AND 95% CREDIBLE INTERVAL
+# ==================================================
+
+effects_table_pH_models_original <-
+
+  draws_all_pH_med_var_original %>%
+
+  group_by(predictor, response) %>%
+
+  summarise(
+    Mean = mean(effect),
+    `2.5%` = quantile(effect, 0.025),
+    `97.5%` = quantile(effect, 0.975),
+    .groups = "drop"
+  )
+
+
+# ==================================================
+# 10. CREATE WIDE TABLE
+# ==================================================
+
+effects_table_pH_models_original_wide <-
+
+  effects_table_pH_models_original %>%
+
+  mutate(
+
+    predictor = factor(
+      predictor,
+      levels = c(
+        "Test diameter",
+        "Decreasing median pHT",
+        "pHT variability"
+      )
+    ),
+
+    response = factor(
+      response,
+      levels = c(
+        "Test biomineral (%)",
+        "Test thickness (µm)",
+        "Jaw length (mm)",
+        "Spine biomineral (%)",
+        "Spine thickness (µm)",
+        "Spine length (mm)"
+      )
+    )
+
+  ) %>%
+
+  pivot_wider(
+    names_from = response,
+    values_from = c(Mean, `2.5%`, `97.5%`),
+    names_glue = "{response}_{.value}"
+  ) %>%
+
+  arrange(predictor) %>%
+
+  select(
+
+    predictor,
+
+    `Test biomineral (%)_Mean`,
+    `Test biomineral (%)_2.5%`,
+    `Test biomineral (%)_97.5%`,
+
+    `Test thickness (µm)_Mean`,
+    `Test thickness (µm)_2.5%`,
+    `Test thickness (µm)_97.5%`,
+
+    `Jaw length (mm)_Mean`,
+    `Jaw length (mm)_2.5%`,
+    `Jaw length (mm)_97.5%`,
+
+    `Spine biomineral (%)_Mean`,
+    `Spine biomineral (%)_2.5%`,
+    `Spine biomineral (%)_97.5%`,
+
+    `Spine thickness (µm)_Mean`,
+    `Spine thickness (µm)_2.5%`,
+    `Spine thickness (µm)_97.5%`,
+
+    `Spine length (mm)_Mean`,
+    `Spine length (mm)_2.5%`,
+    `Spine length (mm)_97.5%`
+
+  ) %>%
+
+  mutate(
+    across(
+      where(is.numeric),
+      ~ signif(.x, 3)
+    )
+  )
+
+
+# ==================================================
+# 11. INSPECT TABLE
+# ==================================================
+
+effects_table_pH_models_original_wide
+
+
+# ==================================================
+# 12. SAVE TABLE
+# ==================================================
+
+write.csv(
+  effects_table_pH_models_original_wide,
+  "ResultsTables/effects_table_pH_models_original_units.csv",
+  row.names = FALSE
+)
+
+
+
+
+```
+
+# Diagnostic plots for pH models
+```{r}
+color_scheme_set("purple")
+
+save_model_diagnostics <- function(model, model_name, folder){
+
+  dir.create(folder, recursive = TRUE, showWarnings = FALSE)
+
+  # Replace problematic characters in filenames
+  safe_name <- gsub("%", "percent", model_name)
+  safe_name <- gsub("[µ]", "u", safe_name)
+  safe_name <- gsub("[()]", "", safe_name)
+  safe_name <- gsub(" ", "_", safe_name)
+
+  brms_plots <- plot(model)
+
+  posterior_hist  <- brms_plots[[1]]
+  posterior_trace <- brms_plots[[2]]
+
+  pp <- pp_check(model) +
+    ggtitle("Posterior predictive check")
+
+  combined <- arrangeGrob(
+    posterior_hist,
+    posterior_trace,
+    pp,
+    ncol = 1,
+    heights = c(1, 1, 1.1)
+  )
+
+  ggsave(
+    filename = file.path(folder, paste0(safe_name, "_ALL_diagnostics.png")),
+    plot = combined,
+    width = 10,
+    height = 16,
+    dpi = 300
+  )
+}
+
+models <- list(
+  "Test Biomineral (%)" = model_biom_pH_med_var,
+  "Test Thickness (µm)" = model_thi_pH_med_var,
+  "Spine Biomineral (%)" = model_spine_por_pH_med_var,
+  "Spine Thickness (µm)" = model_spine_dia_pH_med_var,
+  "Spine Length (mm)" = model_spine_len_pH_med_var,
+  "Jaw Length (mm)" = model_jaw_len_pH_med_var
+)
+
+invisible(
+  lapply(names(models), function(name){
+    save_model_diagnostics(models[[name]], name,
+                           "DiagnosticPlots/pH_models")
+  })
+)
+```
+
+
+
+# Sensitivity analysis - pH models - no White Island / Whakaari
+```{r}
+# ============================================================
+# SENSITIVITY ANALYSIS: EXCLUDING WHITE ISLAND / WHAKAARI
+# Outputs:
+#   1. Six refitted Bayesian models
+#   2. Posterior pH-effect summaries
+#   3. Forest plot of pH effects
+#   4. Bayesian R2 table
+#   5. Model diagnostic plots
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. Exclude White Island / Whakaari
+# ------------------------------------------------------------
+
+dat_no_whakaari <- dat_all %>%
+  filter(
+    !grepl(
+      "White Island|Whakaari",
+      as.character(Analogue),
+      ignore.case = TRUE
+    )
+  ) %>%
+  droplevels()
+
+
+# Check exclusions
+cat("Original observations:", nrow(dat_all), "\n")
+cat("Reduced observations:", nrow(dat_no_whakaari), "\n")
+cat(
+  "Observations excluded:",
+  nrow(dat_all) - nrow(dat_no_whakaari), "\n"
+)
+
+cat("\nRemaining analogues:\n")
+print(unique(dat_no_whakaari$Analogue))
+
+cat("\nExcluded analogues:\n")
+print(
+  unique(
+    dat_all$Analogue[
+      grepl(
+        "White Island|Whakaari",
+        as.character(dat_all$Analogue),
+        ignore.case = TRUE
+      )
+    ]
+  )
+)
+
+
+# ------------------------------------------------------------
+# 2. Re-standardise ALL variables using reduced dataset
+# ------------------------------------------------------------
+
+dat_no_whakaari <- dat_no_whakaari %>%
+  mutate(
+    # Skeletal response variables
+    Biomineral_z = as.numeric(scale(Biomineral)),
+    Thickness_z = as.numeric(scale(ThicknessCT.um.)),
+    JawLen_z = as.numeric(scale(Jaw_length)),
+    SpineBiomineral_z = as.numeric(scale(SpineBiomineral)),
+    SpineDia_z = as.numeric(scale(Spine_diameter)),
+    SpineLen_z = as.numeric(scale(Spine_length)),
+
+    # Predictor variables
+    median_pH_z = as.numeric(scale(median_pH)),
+    TestDiameter_z = as.numeric(scale(TestDiameter))
+  )
+
+
+# Check standardisation
+cat("\nStandardised variable means:\n")
+
+print(
+  dat_no_whakaari %>%
+    summarise(
+      across(
+        c(
+          Biomineral_z,
+          Thickness_z,
+          JawLen_z,
+          SpineBiomineral_z,
+          SpineDia_z,
+          SpineLen_z,
+          median_pH_z,
+          TestDiameter_z
+        ),
+        ~ mean(.x, na.rm = TRUE)
+      )
+    )
+)
+
+cat("\nStandardised variable SDs:\n")
+
+print(
+  dat_no_whakaari %>%
+    summarise(
+      across(
+        c(
+          Biomineral_z,
+          Thickness_z,
+          JawLen_z,
+          SpineBiomineral_z,
+          SpineDia_z,
+          SpineLen_z,
+          median_pH_z,
+          TestDiameter_z
+        ),
+        ~ sd(.x, na.rm = TRUE)
+      )
+    )
+)
+
+
+# ------------------------------------------------------------
+# 3. Fit six Bayesian models
+# ------------------------------------------------------------
+
+# Test Biomineral Content
+model_biom_consistency_no_whakaari <- brm(
+  Biomineral_z ~ TestDiameter_z + median_pH_z + pH_var_z +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_no_whakaari,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+
+# Test Thickness
+model_thi_consistency_no_whakaari <- brm(
+  Thickness_z ~ TestDiameter_z + median_pH_z + pH_var_z +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_no_whakaari,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+
+# Jaw Length
+model_jaw_len_consistency_no_whakaari <- brm(
+  JawLen_z ~ TestDiameter_z + median_pH_z + pH_var_z +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_no_whakaari,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+
+# Spine Biomineral Content
+model_spine_por_consistency_no_whakaari <- brm(
+  SpineBiomineral_z ~ TestDiameter_z + median_pH_z + pH_var_z +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_no_whakaari,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+
+# Spine Thickness
+model_spine_dia_consistency_no_whakaari <- brm(
+  SpineDia_z ~ TestDiameter_z + median_pH_z + pH_var_z +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_no_whakaari,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+
+# Spine Length
+model_spine_len_consistency_no_whakaari <- brm(
+  SpineLen_z ~ TestDiameter_z + median_pH_z + pH_var_z +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_no_whakaari,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+
+# ------------------------------------------------------------
+# 4. Extract posterior draws for pH effects
+# ------------------------------------------------------------
+
+get_pH_draws <- function(model, response_name) {
+
+  as_draws_df(model) %>%
+    select(b_median_pH_z) %>%
+    mutate(response = response_name)
+
+}
+
+
+draws_all_no_whakaari <- bind_rows(
+
+  get_pH_draws(
+    model_biom_consistency_no_whakaari,
+    "Test Biomineral Content"
+  ),
+
+  get_pH_draws(
+    model_thi_consistency_no_whakaari,
+    "Test Thickness"
+  ),
+
+  get_pH_draws(
+    model_jaw_len_consistency_no_whakaari,
+    "Jaw Length"
+  ),
+
+  get_pH_draws(
+    model_spine_por_consistency_no_whakaari,
+    "Spine Biomineral Content"
+  ),
+
+  get_pH_draws(
+    model_spine_dia_consistency_no_whakaari,
+    "Spine Thickness"
+  ),
+
+  get_pH_draws(
+    model_spine_len_consistency_no_whakaari,
+    "Spine Length"
+  )
+
+)
+
+
+# ------------------------------------------------------------
+# 5. Summarise posterior pH effects
+# ------------------------------------------------------------
+
+# 95% HDI
+sum_95_no_whakaari <- draws_all_no_whakaari %>%
+  group_by(response) %>%
+  median_hdi(b_median_pH_z, .width = 0.95) %>%
+  rename(
+    median = b_median_pH_z,
+    hdi_95_low = .lower,
+    hdi_95_high = .upper
+  )
+
+
+# 50% HDI
+sum_50_no_whakaari <- draws_all_no_whakaari %>%
+  group_by(response) %>%
+  median_hdi(b_median_pH_z, .width = 0.50) %>%
+  rename(
+    hdi_50_low = .lower,
+    hdi_50_high = .upper
+  )
+
+
+# Combine summaries
+effects_sum_no_whakaari <- sum_95_no_whakaari %>%
+  select(
+    response,
+    median,
+    hdi_95_low,
+    hdi_95_high
+  ) %>%
+  left_join(
+    sum_50_no_whakaari %>%
+      select(
+        response,
+        hdi_50_low,
+        hdi_50_high
+      ),
+    by = "response"
+  )
+
+
+# ------------------------------------------------------------
+# 6. Prepare effect directions and plot colours
+# ------------------------------------------------------------
+
+effects_sum_no_whakaari <- effects_sum_no_whakaari %>%
+  mutate(
+    median_flip = -median,
+    hdi_95_low_flip = -hdi_95_high,
+    hdi_95_high_flip = -hdi_95_low,
+    hdi_50_low_flip = -hdi_50_high,
+    hdi_50_high_flip = -hdi_50_low
+  ) %>%
+  mutate(
+    seg_color = case_when(
+      median_flip > 0 ~ "#ffc857ff",
+      median_flip < 0 ~ "#9c7acfff",
+      TRUE ~ "#ffc857ff"
+    ),
+    fill_color = case_when(
+      hdi_95_low_flip > 0 ~ "#ffc857ff",
+      hdi_95_high_flip < 0 ~ "#9c7acfff",
+      TRUE ~ "#FFFFFF"
+    ),
+    response = recode(
+      response,
+      "Test Biomineral Content" = "Test Biomineral (%)",
+      "Test Thickness" = "Test Thickness (µm)",
+      "Jaw Length" = "Jaw Length (mm)",
+      "Spine Biomineral Content" = "Spine Biomineral (%)",
+      "Spine Thickness" = "Spine Thickness (µm)",
+      "Spine Length" = "Spine Length (mm)"
+    ),
+    response = factor(
+      response,
+      levels = c(
+        "Jaw Length (mm)",
+        "Spine Length (mm)",
+        "Spine Thickness (µm)",
+        "Spine Biomineral (%)",
+        "Test Thickness (µm)",
+        "Test Biomineral (%)"
+      )
+    )
+  )
+
+
+# ------------------------------------------------------------
+# 7. Plot posterior pH effects
+# ------------------------------------------------------------
+
+SiteEffects_pH_no_whakaari <- ggplot(
+  effects_sum_no_whakaari,
+  aes(x = median_flip, y = response)
+) +
+
+  geom_segment(
+    aes(
+      x = hdi_95_low_flip,
+      xend = hdi_95_high_flip,
+      yend = response,
+      color = seg_color
+    ),
+    linewidth = 0.6
+  ) +
+
+  geom_segment(
+    aes(
+      x = hdi_50_low_flip,
+      xend = hdi_50_high_flip,
+      yend = response,
+      color = seg_color
+    ),
+    linewidth = 2
+  ) +
+
+  geom_point(
+    aes(fill = fill_color),
+    shape = 21,
+    size = 5,
+    color = "black"
+  ) +
+
+  geom_vline(
+    xintercept = 0,
+    linetype = "dashed",
+    linewidth = 0.5
+  ) +
+
+  scale_color_identity() +
+  scale_fill_identity() +
+
+  labs(
+    x = expression("β (Median pH"[T]*")"),
+    y = ""
+  ) +
+
+  theme_classic(base_size = 16) +
+
+  theme(
+    panel.border = element_rect(
+      fill = NA,
+      color = "black"
+    ),
+    legend.position = "none"
+  )
+
+
+# Display plot
+print(SiteEffects_pH_no_whakaari)
+
+
+# ------------------------------------------------------------
+# 8. Save posterior effect plot
+# ------------------------------------------------------------
+
+dir.create(
+  "Figures/Supplementary",
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+ggsave(
+  filename = paste0(
+    "Figures/Supplementary/",
+    "pH_MainEffect_plot_excluding_WhiteIsland.svg"
+  ),
+  plot = SiteEffects_pH_no_whakaari,
+  width = 6,
+  height = 4.5,
+  device = "svg"
+)
+
+
+# ------------------------------------------------------------
+# 9. Calculate Bayesian R2
+# ------------------------------------------------------------
+
+models_no_whakaari <- list(
+
+  "Test Biomineral Content" =
+    model_biom_consistency_no_whakaari,
+
+  "Test Thickness" =
+    model_thi_consistency_no_whakaari,
+
+  "Jaw Length" =
+    model_jaw_len_consistency_no_whakaari,
+
+  "Spine Biomineral Content" =
+    model_spine_por_consistency_no_whakaari,
+
+  "Spine Thickness" =
+    model_spine_dia_consistency_no_whakaari,
+
+  "Spine Length" =
+    model_spine_len_consistency_no_whakaari
+
+)
+
+
+r2_results_no_whakaari <- lapply(
+  names(models_no_whakaari),
+  function(trait) {
+
+    r2 <- bayes_R2(models_no_whakaari[[trait]])
+
+    data.frame(
+      Trait = trait,
+      Estimate = r2[, "Estimate"],
+      Est_Error = r2[, "Est.Error"],
+      Q2.5 = r2[, "Q2.5"],
+      Q97.5 = r2[, "Q97.5"]
+    )
+
+  }
+)
+
+
+r2_results_pH_no_whakaari <- bind_rows(
+  r2_results_no_whakaari
+)
+
+
+# Display R2 results
+print(r2_results_pH_no_whakaari)
+
+
+# Save R2 results
+write.csv(
+  r2_results_pH_no_whakaari,
+  "ResultsTables/r2_results_pH_excluding_WhiteIsland.csv",
+  row.names = FALSE
+)
+
+
+# ------------------------------------------------------------
+# 10. Save model diagnostics
+# ------------------------------------------------------------
+
+color_scheme_set("purple")
+
+
+save_model_diagnostics <- function(
+  model,
+  model_name,
+  folder
+) {
+
+  dir.create(
+    folder,
+    recursive = TRUE,
+    showWarnings = FALSE
+  )
+
+  brms_plots <- plot(model)
+
+  posterior_hist <- brms_plots[[1]]
+  posterior_trace <- brms_plots[[2]]
+
+  pp <- pp_check(model) +
+    ggtitle("Posterior predictive check")
+
+  combined <- arrangeGrob(
+    posterior_hist,
+    posterior_trace,
+    pp,
+    ncol = 1,
+    heights = c(1, 1, 1.1)
+  )
+
+  ggsave(
+    filename = paste0(
+      folder,
+      "/",
+      model_name,
+      "_ALL_diagnostics.png"
+    ),
+    plot = combined,
+    width = 10,
+    height = 16,
+    dpi = 300
+  )
+
+}
+
+
+# Save diagnostics for all six models
+invisible(
+  lapply(
+    names(models_no_whakaari),
+    function(name) {
+
+      save_model_diagnostics(
+        models_no_whakaari[[name]],
+        name,
+        "DiagnosticPlots/pH_models/NoWhiteIsland"
+      )
+
+    }
+  )
+)
+
+
+# ------------------------------------------------------------
+# 11. Save posterior effect summaries
+# ------------------------------------------------------------
+
+write.csv(
+  effects_sum_no_whakaari,
+  "ResultsTables/pH_effects_excluding_WhiteIsland.csv",
+  row.names = FALSE
+)
+
+
+# ------------------------------------------------------------
+# 12. Print final results
+# ------------------------------------------------------------
+
+cat("\n\n============================================\n")
+cat("SENSITIVITY ANALYSIS: EXCLUDING WHITE ISLAND\n")
+cat("============================================\n\n")
+
+cat("Posterior pH-effect summaries:\n")
+print(effects_sum_no_whakaari)
+
+cat("\nBayesian R2 results:\n")
+print(r2_results_pH_no_whakaari)
+
+```
+
+# pH model sensitivity analysis figure - No White Island / Whakaari
+```{r}
+
+# ============================================================
+# 4. EXTRACT POSTERIOR DRAWS FOR ALL THREE PREDICTORS
+# ============================================================
+
+# Collect sensitivity models
+
+models_no_whakaari <- list(
+  "Test Biomineral (%)" = model_biom_consistency_no_whakaari,
+  "Test Thickness (µm)" = model_thi_consistency_no_whakaari,
+  "Spine Biomineral (%)" = model_spine_por_consistency_no_whakaari,
+  "Spine Thickness (µm)" = model_spine_dia_consistency_no_whakaari,
+  "Spine Length (mm)" = model_spine_len_consistency_no_whakaari,
+  "Jaw Length (mm)" = model_jaw_len_consistency_no_whakaari
+)
+
+
+response_order_no_whakaari <- c(
+  "Jaw Length (mm)",
+  "Spine Length (mm)",
+  "Spine Thickness (µm)",
+  "Spine Biomineral (%)",
+  "Test Thickness (µm)",
+  "Test Biomineral (%)"
+)
+
+
+# ------------------------------------------------------------
+# Extract posterior draws
+# ------------------------------------------------------------
+
+get_effect_draws_no_whakaari <- function(
+    model_list,
+    parameter,
+    predictor
+) {
+
+  bind_rows(
+    lapply(names(model_list), function(response_name) {
+
+      draws <- as_draws_df(model_list[[response_name]])
+
+      tibble(
+        effect = draws[[parameter]],
+        response = response_name,
+        predictor = predictor
+      )
+
+    })
+  )
+}
+
+
+# Test diameter
+
+draws_test_diameter_no_whakaari <-
+  get_effect_draws_no_whakaari(
+    models_no_whakaari,
+    "b_TestDiameter_z",
+    "Test diameter"
+  )
+
+
+# Median pHT
+# Reverse coefficients so positive effects represent
+# higher trait values associated with decreasing median pHT.
+
+draws_median_pH_no_whakaari <-
+  get_effect_draws_no_whakaari(
+    models_no_whakaari,
+    "b_median_pH_z",
+    "Median pHT"
+  ) %>%
+  mutate(effect = -effect)
+
+
+# pHT variability
+
+draws_pH_var_no_whakaari <-
+  get_effect_draws_no_whakaari(
+    models_no_whakaari,
+    "b_pH_var_z",
+    "pHT variability"
+  )
+
+
+# Combine all predictors
+
+draws_all_effects_no_whakaari <- bind_rows(
+  draws_test_diameter_no_whakaari,
+  draws_median_pH_no_whakaari,
+  draws_pH_var_no_whakaari
+)
+
+
+# ============================================================
+# 5. SUMMARISE POSTERIOR DISTRIBUTIONS
+# ============================================================
+
+effects_summary_no_whakaari <-
+  draws_all_effects_no_whakaari %>%
+  group_by(predictor, response) %>%
+  median_hdi(
+    effect,
+    .width = c(0.95, 0.50)
+  ) %>%
+  ungroup()
+
+
+# Separate 95% and 50% HDIs
+
+effects_95_no_whakaari <-
+  effects_summary_no_whakaari %>%
+  filter(.width == 0.95) %>%
+  select(
+    predictor,
+    response,
+    median = effect,
+    hdi_95_low = .lower,
+    hdi_95_high = .upper
+  )
+
+
+effects_50_no_whakaari <-
+  effects_summary_no_whakaari %>%
+  filter(.width == 0.50) %>%
+  select(
+    predictor,
+    response,
+    hdi_50_low = .lower,
+    hdi_50_high = .upper
+  )
+
+
+# Combine summaries and assign colours
+
+effects_plot_data_no_whakaari <-
+  effects_95_no_whakaari %>%
+  left_join(
+    effects_50_no_whakaari,
+    by = c("predictor", "response")
+  ) %>%
+  mutate(
+
+    response = factor(
+      response,
+      levels = response_order_no_whakaari
+    ),
+
+    predictor = factor(
+      predictor,
+      levels = c(
+        "Test diameter",
+        "Median pHT",
+        "pHT variability"
+      )
+    ),
+
+    # Colour based on posterior median
+
+    seg_color = case_when(
+      median > 0 ~ "#ffc857ff",
+      median < 0 ~ "#9c7acfff",
+      TRUE ~ "#ffc857ff"
+    ),
+
+    # White points where 95% HDI overlaps zero
+
+    fill_color = case_when(
+      hdi_95_low > 0 ~ "#ffc857ff",
+      hdi_95_high < 0 ~ "#9c7acfff",
+      TRUE ~ "#FFFFFF"
+    )
+  )
+
+
+# ============================================================
+# 6. FUNCTION TO GENERATE EACH COEFFICIENT PANEL
+# ============================================================
+
+plot_effect_panel_no_whakaari <- function(
+    data,
+    predictor,
+    x_label
+) {
+
+  ggplot(
+    filter(data, as.character(predictor) == !!predictor),
+    aes(x = median, y = response)
+  ) +
+
+    geom_segment(
+      aes(
+        x = hdi_95_low,
+        xend = hdi_95_high,
+        yend = response,
+        color = seg_color
+      ),
+      linewidth = 0.6
+    ) +
+
+    geom_segment(
+      aes(
+        x = hdi_50_low,
+        xend = hdi_50_high,
+        yend = response,
+        color = seg_color
+      ),
+      linewidth = 2
+    ) +
+
+    geom_point(
+      aes(fill = fill_color),
+      shape = 21,
+      size = 5,
+      color = "black"
+    ) +
+
+    geom_vline(
+      xintercept = 0,
+      linetype = "dashed",
+      linewidth = 0.5
+    ) +
+
+    scale_color_identity() +
+    scale_fill_identity() +
+
+    labs(
+      x = x_label,
+      y = ""
+    ) +
+
+    theme_classic(base_size = 16) +
+
+    theme(
+      panel.border = element_rect(
+        fill = NA,
+        color = "black"
+      ),
+      legend.position = "none"
+    )
+}
+
+
+# ============================================================
+# 7. GENERATE THREE PANELS
+# ============================================================
+
+plot_test_diameter_no_whakaari <-
+  plot_effect_panel_no_whakaari(
+    effects_plot_data_no_whakaari,
+    "Test diameter",
+    expression(beta ~ "(Test diameter)")
+  )
+
+
+plot_median_pH_no_whakaari <-
+  plot_effect_panel_no_whakaari(
+    effects_plot_data_no_whakaari,
+    "Median pHT",
+    expression(beta ~ "(Median pH"[T]*")")
+  )
+
+
+plot_pH_var_no_whakaari <-
+  plot_effect_panel_no_whakaari(
+    effects_plot_data_no_whakaari,
+    "pHT variability",
+    expression(beta ~ "(pH"[T] ~ "variability)")
+  )
+
+
+# ============================================================
+# 8. COMBINE THREE PANELS
+# ============================================================
+
+combined_effects_plot_no_whakaari <- (
+
+  plot_test_diameter_no_whakaari +
+  plot_median_pH_no_whakaari +
+  plot_pH_var_no_whakaari
+
+) +
+
+  plot_layout(
+    ncol = 3,
+    widths = c(1, 1, 1)
+  ) +
+
+  plot_annotation(
+    tag_levels = "A"
+  )
+
+
+# Display figure
+
+combined_effects_plot_no_whakaari
+
+
+# ============================================================
+# 9. SAVE FIGURE
+# ============================================================
+
+ggsave(
+  "Figures/Supplementary/WhiteIsland_ThreePredictorEffects.svg",
+  plot = combined_effects_plot_no_whakaari,
+  width = 18,
+  height = 4.5,
+  units = "in",
+  dpi = 300
+)
+
+```
+# Extract posterior means
+```{r}
+# ==================================================
+# EXTRACT POSTERIOR DRAWS FOR ALL THREE PREDICTORS
+# EXCLUDING WHITE ISLAND / WHAKAARI
+# BACK-TRANSFORMED TO ORIGINAL TRAIT UNITS
+# ==================================================
+
+library(brms)
+library(posterior)
+library(dplyr)
+library(tidyr)
+library(tibble)
+
+
+# ==================================================
+# 1. DEFINE MODELS
+# ==================================================
+
+models_pH_med_var_no_whakaari <- list(
+  "Test biomineral (%)" = model_biom_consistency_no_whakaari,
+  "Test thickness (µm)" = model_thi_consistency_no_whakaari,
+  "Jaw length (mm)" = model_jaw_len_consistency_no_whakaari,
+  "Spine biomineral (%)" = model_spine_por_consistency_no_whakaari,
+  "Spine thickness (µm)" = model_spine_dia_consistency_no_whakaari,
+  "Spine length (mm)" = model_spine_len_consistency_no_whakaari
+)
+
+
+# ==================================================
+# 2. DEFINE RAW TRAIT VARIABLES AND SDs
+# ==================================================
+
+trait_variables_no_whakaari <- c(
+  "Test biomineral (%)" = "Biomineral",
+  "Test thickness (µm)" = "ThicknessCT.um.",
+  "Jaw length (mm)" = "Jaw_length",
+  "Spine biomineral (%)" = "SpineBiomineral",
+  "Spine thickness (µm)" = "Spine_diameter",
+  "Spine length (mm)" = "Spine_length"
+)
+
+
+# Calculate SDs from the dataset used for the
+# White Island-exclusion models
+
+trait_sd_no_whakaari <- sapply(
+  trait_variables_no_whakaari,
+  function(x) sd(dat_no_whakaari[[x]], na.rm = TRUE)
+)
+
+
+# Spine diameter is stored in mm but reported in µm
+
+trait_sd_no_whakaari["Spine thickness (µm)"] <-
+  trait_sd_no_whakaari["Spine thickness (µm)"] * 1000
+
+
+# Inspect SDs used for back-transformation
+
+trait_sd_no_whakaari
+
+
+# ==================================================
+# 3. DEFINE MODEL PARAMETERS AND LABELS
+# ==================================================
+
+parameters_no_whakaari <- c(
+  "b_TestDiameter_z" = "Test diameter",
+  "b_median_pH_z" = "Median pHT",
+  "b_pH_var_z" = "pHT variability"
+)
+
+
+# ==================================================
+# 4. EXTRACT POSTERIOR DRAWS AND BACK-TRANSFORM
+# ==================================================
+
+extract_all_draws_no_whakaari <- function(
+    model,
+    response_name
+) {
+
+  draws <- as_draws_df(model)
+
+  response_sd <- trait_sd_no_whakaari[[response_name]]
+
+  # Check that all requested parameters are present
+
+  missing_parameters <- setdiff(
+    names(parameters_no_whakaari),
+    names(draws)
+  )
+
+  if (length(missing_parameters) > 0) {
+    stop(
+      "Missing parameters for ", response_name, ": ",
+      paste(missing_parameters, collapse = ", ")
+    )
+  }
+
+  bind_rows(
+    lapply(names(parameters_no_whakaari), function(param) {
+
+      effect <- draws[[param]]
+
+      # Reverse median pHT coefficient to represent
+      # a one SD decrease in median pHT
+
+      if (param == "b_median_pH_z") {
+        effect <- -effect
+      }
+
+      # Back-transform from SD(response) to
+      # original trait units
+
+      effect <- effect * response_sd
+
+      tibble(
+        response = response_name,
+        predictor = parameters_no_whakaari[[param]],
+        effect = effect
+      )
+
+    })
+  )
+}
+
+
+draws_all_no_whakaari_three_predictors <- bind_rows(
+
+  lapply(
+    names(models_pH_med_var_no_whakaari),
+    function(response_name) {
+
+      extract_all_draws_no_whakaari(
+        models_pH_med_var_no_whakaari[[response_name]],
+        response_name
+      )
+
+    }
+  )
+
+)
+
+
+# ==================================================
+# 5. SUMMARISE POSTERIOR
+# MEAN AND 95% CREDIBLE INTERVAL
+# ==================================================
+
+effects_table_pH_no_whakaari <-
+  draws_all_no_whakaari_three_predictors %>%
+
+  group_by(predictor, response) %>%
+
+  summarise(
+    Mean = mean(effect),
+    `2.5%` = quantile(effect, 0.025),
+    `97.5%` = quantile(effect, 0.975),
+    .groups = "drop"
+  )
+
+
+# ==================================================
+# 6. CREATE WIDE TABLE
+# ==================================================
+
+effects_table_pH_no_whakaari_wide <-
+
+  effects_table_pH_no_whakaari %>%
+
+  mutate(
+    predictor = factor(
+      predictor,
+      levels = c(
+        "Test diameter",
+        "Median pHT",
+        "pHT variability"
+      )
+    ),
+
+    response = factor(
+      response,
+      levels = c(
+        "Test biomineral (%)",
+        "Test thickness (µm)",
+        "Jaw length (mm)",
+        "Spine biomineral (%)",
+        "Spine thickness (µm)",
+        "Spine length (mm)"
+      )
+    )
+  ) %>%
+
+  pivot_wider(
+    names_from = response,
+    values_from = c(Mean, `2.5%`, `97.5%`),
+    names_glue = "{response}_{.value}"
+  ) %>%
+
+  arrange(predictor) %>%
+
+  select(
+    predictor,
+
+    `Test biomineral (%)_Mean`,
+    `Test biomineral (%)_2.5%`,
+    `Test biomineral (%)_97.5%`,
+
+    `Test thickness (µm)_Mean`,
+    `Test thickness (µm)_2.5%`,
+    `Test thickness (µm)_97.5%`,
+
+    `Jaw length (mm)_Mean`,
+    `Jaw length (mm)_2.5%`,
+    `Jaw length (mm)_97.5%`,
+
+    `Spine biomineral (%)_Mean`,
+    `Spine biomineral (%)_2.5%`,
+    `Spine biomineral (%)_97.5%`,
+
+    `Spine thickness (µm)_Mean`,
+    `Spine thickness (µm)_2.5%`,
+    `Spine thickness (µm)_97.5%`,
+
+    `Spine length (mm)_Mean`,
+    `Spine length (mm)_2.5%`,
+    `Spine length (mm)_97.5%`
+  ) %>%
+
+  mutate(
+    across(
+      where(is.numeric),
+      ~ signif(.x, 3)
+    )
+  )
+
+
+# ==================================================
+# 7. INSPECT TABLE
+# ==================================================
+
+effects_table_pH_no_whakaari_wide
+
+
+# ==================================================
+# 8. SAVE TABLE
+# ==================================================
+
+write.csv(
+  effects_table_pH_no_whakaari_wide,
+  "ResultsTables/effects_table_pH_models_excluding_WhiteIsland_original_units.csv",
+  row.names = FALSE
+)
+
+```
+
+# Omega Mg-Calcite saturation models
+```{r}
+# Test Biomineral
+model_biom_consistency_omega <- brm(
+  Biomineral_z ~ scale(TestDiameter) + Omega_z + scale(pH_var) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+# Test Thickness
+model_thi_consistency_omega <- brm(
+    Thickness_z ~ scale(TestDiameter) + Omega_z + scale(pH_var) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+# Jaw Length 
+model_jaw_len_consistency_omega <- brm(
+  JawLen_z ~ scale(TestDiameter) + Omega_z + scale(pH_var) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+# Spine Biomineral 
+model_spine_por_consistency_omega <- brm(
+  SpineBiomineral_z ~ scale(TestDiameter) + Omega_z + scale(pH_var) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+# Spine Diameter
+model_spine_dia_consistency_omega <- brm(
+  SpineDia_z ~ scale(TestDiameter) + Omega_z + scale(pH_var) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+# Spine Length
+model_spine_len_consistency_omega <- brm(
+  SpineLen_z ~ scale(TestDiameter) + Omega_z + scale(pH_var) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+
+# ---- Extract posterior draws for Omega Mg-Calcite ---- #
+get_omega_draws <- function(model, response_name) {
+  as_draws_df(model) %>%
+    select(b_Omega_z) %>%
+    mutate(response = response_name)
+}
+
+draws_all <- bind_rows(
+  get_omega_draws(model_biom_consistency_omega, "Test Biomineral (%)"),
+  get_omega_draws(model_thi_consistency_omega, "Test Thickness (µm)"),
+  get_omega_draws(model_spine_por_consistency_omega, "Spine Biomineral (%)"),
+  get_omega_draws(model_spine_dia_consistency_omega, "Spine Thickness (µm)"),
+  get_omega_draws(model_spine_len_consistency_omega, "Spine Length (mm)"),
+  get_omega_draws(model_jaw_len_consistency_omega, "Jaw Length (mm)")
+)
+
+# ---- Plot ---- #
+sum_95 <- draws_all %>%
+  group_by(response) %>%
+  median_hdi(b_Omega_z, .width = 0.95) %>%
+  rename(
+    median      = b_Omega_z,
+    hdi_95_low  = .lower,
+    hdi_95_high = .upper
+  )
+
+sum_50 <- draws_all %>%
+  group_by(response) %>%
+  median_hdi(b_Omega_z, .width = 0.50) %>%
+  rename(
+    hdi_50_low  = .lower,
+    hdi_50_high = .upper
+  )
+
+effects_sum <- sum_95 %>%
+  left_join(sum_50, by = "response")
+
+effects_sum <- effects_sum %>%
+  mutate(
+    median_flip   = -median,
+    hdi_95_low_flip = -hdi_95_high,
+    hdi_95_high_flip = -hdi_95_low,
+    hdi_50_low_flip  = -hdi_50_high,
+    hdi_50_high_flip = -hdi_50_low
+  ) %>%
+  mutate(
+    seg_color = case_when(
+      median_flip > 0 ~ "#ffc857ff",
+      median_flip < 0 ~ "#9c7acfff",
+      TRUE            ~ "#ffc857ff"
+    ),
+    fill_color = case_when(
+      hdi_95_low_flip  > 0 ~ "#ffc857ff",
+      hdi_95_high_flip < 0 ~ "#9c7acfff",
+      TRUE                 ~ "#FFFFFF"
+    ),
+    response = factor(response, levels = c(
+      "Jaw Length (mm)",
+      "Spine Length (mm)",
+      "Spine Thickness (µm)",
+      "Spine Biomineral (%)",
+      "Test Thickness (µm)",
+      "Test Biomineral (%)"
+    ))
+  )
+
+SiteEffects_Omega <- ggplot(effects_sum, aes(x = median_flip, y = response)) +
+  geom_segment(
+    aes(x = hdi_95_low_flip, xend = hdi_95_high_flip, yend = response, color = seg_color),
+    linewidth = 0.6
+  ) +
+  geom_segment(
+    aes(x = hdi_50_low_flip, xend = hdi_50_high_flip, yend = response, color = seg_color),
+    linewidth = 2
+  ) +
+  geom_point(
+    aes(fill = fill_color),
+    shape = 21,
+    size = 5,
+    color = "black"
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.5) +
+  scale_color_identity() +
+  scale_fill_identity() +
+  labs(
+    x = expression("β ("*Omega[Mg-calcite]*")"),
+    y = ""
+  ) +
+  theme_classic(base_size = 16) +
+  theme(
+    panel.border = element_rect(fill = NA, color = "black"),
+    legend.position = "none"
+  )
+
+SiteEffects_Omega
+
+ggsave("Figures/Supplementary/OmegaMgCalcite_MainEffect_plot.svg",
+       plot = SiteEffects_Omega,
+       width = 6, height = 4.5, units = "in", dpi = 300)
+```
+
+# R2 Statistics
+```{r}
+models <- list(
+  "Test Biomineral Content" = model_biom_consistency_omega,
+  "Test Thickness" = model_thi_consistency_omega,
+  "Jaw Length" = model_jaw_len_consistency_omega,
+  "Spine Biomineral Content" = model_spine_por_consistency_omega,
+  "Spine Thickness" = model_spine_dia_consistency_omega,
+  "Spine Length" = model_spine_len_consistency_omega
+)
+
+r2_results <- lapply(names(models), function(trait){
+  
+  r2 <- bayes_R2(models[[trait]])
+  
+  data.frame(
+    Trait = trait,
+    Estimate = r2[, "Estimate"],
+    Est_Error = r2[, "Est.Error"],
+    Q2.5 = r2[, "Q2.5"],
+    Q97.5 = r2[, "Q97.5"]
+  )
+})
+
+r2_results_omega_model <- dplyr::bind_rows(r2_results)
+
+write.csv(r2_results_omega_model, "ResultsTables/r2_results_omega_model.csv", row.names = FALSE)
+```
+
+# Diagnostic plots
+```{r}
+models <- list(
+  "Test_Biomineral_Content" = model_biom_consistency_omega,
+  "Test_Thickness" = model_thi_consistency_omega,
+  "Jaw_Length" = model_jaw_len_consistency_omega,
+  "Spine_Biomineral_Content" = model_spine_por_consistency_omega,
+  "Spine_Thickness" = model_spine_dia_consistency_omega,
+  "Spine_Length" = model_spine_len_consistency_omega
+)
+
+invisible(
+  lapply(names(models), function(name){
+    save_model_diagnostics(models[[name]], name,
+                           "DiagnosticPlots/OmegaMgCalcite_models")
+  })
+)
+```
+
+# Extract posterior means
+```{r}
+# ==================================================
+# MG-CALCITE OMEGA MODELS
+# EFFECTS REPORTED IN ORIGINAL TRAIT UNITS
+# ==================================================
+
+library(brms)
+library(posterior)
+library(dplyr)
+library(tidyr)
+library(tibble)
+
+
+# ==================================================
+# 1. DEFINE MODELS
+# ==================================================
+
+models_omega_original <- list(
+  "Test biomineral (%)" = model_biom_consistency_omega,
+  "Test thickness (µm)" = model_thi_consistency_omega,
+  "Jaw length (mm)" = model_jaw_len_consistency_omega,
+  "Spine biomineral (%)" = model_spine_por_consistency_omega,
+  "Spine thickness (µm)" = model_spine_dia_consistency_omega,
+  "Spine length (mm)" = model_spine_len_consistency_omega
+)
+
+
+# ==================================================
+# 2. DEFINE ORIGINAL TRAIT VARIABLES
+# ==================================================
+
+trait_variables_omega <- c(
+  "Test biomineral (%)" = "Biomineral",
+  "Test thickness (µm)" = "ThicknessCT.um.",
+  "Jaw length (mm)" = "Jaw_length",
+  "Spine biomineral (%)" = "SpineBiomineral",
+  "Spine thickness (µm)" = "Spine_diameter",
+  "Spine length (mm)" = "Spine_length"
+)
+
+
+# ==================================================
+# 3. CALCULATE ORIGINAL TRAIT SDs
+# ==================================================
+
+trait_sd_omega <- sapply(
+  trait_variables_omega,
+  function(trait) {
+    sd(dat_all[[trait]], na.rm = TRUE)
+  }
+)
+
+# Convert spine diameter from mm to µm
+trait_sd_omega["Spine thickness (µm)"] <-
+  trait_sd_omega["Spine thickness (µm)"] * 1000
+
+trait_sd_omega
+
+
+# ==================================================
+# 4. EXTRACT POSTERIOR DRAWS
+#    AND BACK-TRANSFORM TO ORIGINAL TRAIT UNITS
+# ==================================================
+
+extract_omega_draws_original <- function(
+    model,
+    response_name
+) {
+
+  draws <- as_draws_df(model)
+
+  # SD of original response in reporting units
+  response_sd <- trait_sd_omega[[response_name]]
+
+  # Reverse coefficient to represent decreasing Mg-calcite Omega
+  effect <- -draws[["b_Omega_z"]]
+
+  # Convert standardised response effect
+  # into original trait measurement units
+  effect_original <- effect * response_sd
+
+  tibble(
+    response = response_name,
+    effect = effect_original
+  )
+}
+
+
+# ==================================================
+# 5. EXTRACT DRAWS FROM ALL SIX MODELS
+# ==================================================
+
+draws_omega_original <- bind_rows(
+
+  lapply(
+    names(models_omega_original),
+
+    function(response_name) {
+
+      extract_omega_draws_original(
+        models_omega_original[[response_name]],
+        response_name
+      )
+
+    }
+  )
+
+)
+
+
+# ==================================================
+# 6. SUMMARISE POSTERIOR
+#    MEAN AND 95% CREDIBLE INTERVAL
+# ==================================================
+
+effects_table_omega_original <-
+
+  draws_omega_original %>%
+
+  group_by(response) %>%
+
+  summarise(
+    Mean = mean(effect),
+    `2.5%` = quantile(effect, 0.025),
+    `97.5%` = quantile(effect, 0.975),
+    .groups = "drop"
+  )
+
+
+# ==================================================
+# 7. CREATE WIDE TABLE
+# ==================================================
+
+effects_table_omega_original_wide <-
+
+  effects_table_omega_original %>%
+
+  mutate(
+    response = factor(
+      response,
+      levels = c(
+        "Test biomineral (%)",
+        "Test thickness (µm)",
+        "Jaw length (mm)",
+        "Spine biomineral (%)",
+        "Spine thickness (µm)",
+        "Spine length (mm)"
+      )
+    )
+  ) %>%
+
+  pivot_wider(
+    names_from = response,
+    values_from = c(Mean, `2.5%`, `97.5%`),
+    names_glue = "{response}_{.value}"
+  ) %>%
+
+  select(
+    `Test biomineral (%)_Mean`,
+    `Test biomineral (%)_2.5%`,
+    `Test biomineral (%)_97.5%`,
+
+    `Test thickness (µm)_Mean`,
+    `Test thickness (µm)_2.5%`,
+    `Test thickness (µm)_97.5%`,
+
+    `Jaw length (mm)_Mean`,
+    `Jaw length (mm)_2.5%`,
+    `Jaw length (mm)_97.5%`,
+
+    `Spine biomineral (%)_Mean`,
+    `Spine biomineral (%)_2.5%`,
+    `Spine biomineral (%)_97.5%`,
+
+    `Spine thickness (µm)_Mean`,
+    `Spine thickness (µm)_2.5%`,
+    `Spine thickness (µm)_97.5%`,
+
+    `Spine length (mm)_Mean`,
+    `Spine length (mm)_2.5%`,
+    `Spine length (mm)_97.5%`
+  ) %>%
+
+  mutate(
+    across(
+      where(is.numeric),
+      ~ signif(.x, 3)
+    )
+  )
+
+
+# ==================================================
+# 8. INSPECT TABLE
+# ==================================================
+
+effects_table_omega_original_wide
+
+
+# ==================================================
+# 9. SAVE TABLE
+# ==================================================
+
+write.csv(
+  effects_table_omega_original_wide,
+  "ResultsTables/effects_table_omega_mg_calcite_original_units.csv",
+  row.names = FALSE
+)
+
+```
+
+
+# Omega calcite
+```{r}
+# =========================================================
+# OMEGA CALCITE MAIN EFFECT MODELS
+# =========================================================
+
+# Test Biomineral
+model_biom_consistency_calcite <- brm(
+  Biomineral_z ~ scale(TestDiameter) + Omega_calc_z + scale(pH_var) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+# Test Thickness
+model_thi_consistency_calcite <- brm(
+  Thickness_z ~ scale(TestDiameter) + Omega_calc_z + scale(pH_var) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+# Jaw Length
+model_jaw_len_consistency_calcite <- brm(
+  JawLen_z ~ scale(TestDiameter) + Omega_calc_z + scale(pH_var) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+# Spine Biomineral
+model_spine_por_consistency_calcite <- brm(
+  SpineBiomineral_z ~ scale(TestDiameter) + Omega_calc_z + scale(pH_var) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+# Spine Diameter
+model_spine_dia_consistency_calcite <- brm(
+  SpineDia_z ~ scale(TestDiameter) + Omega_calc_z + scale(pH_var) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+# Spine Length
+model_spine_len_consistency_calcite <- brm(
+  SpineLen_z ~ scale(TestDiameter) + Omega_calc_z + scale(pH_var) +
+    (1 | Analogue/SitePair) + (1 | Genus),
+  data = dat_all,
+  iter = 4000, chains = 3, cores = 3, seed = 123,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+# =========================================================
+# EXTRACT POSTERIOR DRAWS
+# =========================================================
+
+get_calcite_draws <- function(model, response_name) {
+  as_draws_df(model) %>%
+    select(b_Omega_calc_z) %>%
+    mutate(response = response_name)
+}
+
+draws_all_calcite <- bind_rows(
+  get_calcite_draws(model_biom_consistency_calcite, "Test Biomineral (%)"),
+  get_calcite_draws(model_thi_consistency_calcite, "Test Thickness (µm)"),
+  get_calcite_draws(model_spine_por_consistency_calcite, "Spine Biomineral (%)"),
+  get_calcite_draws(model_spine_dia_consistency_calcite, "Spine Thickness (µm)"),
+  get_calcite_draws(model_spine_len_consistency_calcite, "Spine Length (mm)"),
+  get_calcite_draws(model_jaw_len_consistency_calcite, "Jaw Length (mm)")
+)
+
+# =========================================================
+# POSTERIOR SUMMARIES
+# =========================================================
+
+sum_95_calcite <- draws_all_calcite %>%
+  group_by(response) %>%
+  median_hdi(b_Omega_calc_z, .width = 0.95) %>%
+  rename(
+    median       = b_Omega_calc_z,
+    hdi_95_low   = .lower,
+    hdi_95_high  = .upper
+  )
+
+sum_50_calcite <- draws_all_calcite %>%
+  group_by(response) %>%
+  median_hdi(b_Omega_calc_z, .width = 0.50) %>%
+  rename(
+    hdi_50_low   = .lower,
+    hdi_50_high  = .upper
+  )
+
+effects_sum_calcite <- sum_95_calcite %>%
+  left_join(sum_50_calcite, by = "response")
+
+effects_sum_calcite <- effects_sum_calcite %>%
+  mutate(
+    median_flip       = -median,
+    hdi_95_low_flip   = -hdi_95_high,
+    hdi_95_high_flip  = -hdi_95_low,
+    hdi_50_low_flip   = -hdi_50_high,
+    hdi_50_high_flip  = -hdi_50_low
+  ) %>%
+  mutate(
+    seg_color = case_when(
+      median_flip > 0 ~ "#ffc857ff",
+      median_flip < 0 ~ "#9c7acfff",
+      TRUE             ~ "#ffc857ff"
+    ),
+    fill_color = case_when(
+      hdi_95_low_flip  > 0 ~ "#ffc857ff",
+      hdi_95_high_flip < 0 ~ "#9c7acfff",
+      TRUE                  ~ "#FFFFFF"
+    ),
+    response = factor(response, levels = c(
+      "Jaw Length (mm)",
+      "Spine Length (mm)",
+      "Spine Thickness (µm)",
+      "Spine Biomineral (%)",
+      "Test Thickness (µm)",
+      "Test Biomineral (%)"
+    ))
+  )
+
+# =========================================================
+# PLOT
+# =========================================================
+
+SiteEffects_Calcite <- ggplot(
+  effects_sum_calcite,
+  aes(x = median_flip, y = response)
+) +
+
+  geom_segment(
+    aes(
+      x = hdi_95_low_flip,
+      xend = hdi_95_high_flip,
+      yend = response,
+      color = seg_color
+    ),
+    linewidth = 0.6
+  ) +
+
+  geom_segment(
+    aes(
+      x = hdi_50_low_flip,
+      xend = hdi_50_high_flip,
+      yend = response,
+      color = seg_color
+    ),
+    linewidth = 2
+  ) +
+
+  geom_point(
+    aes(fill = fill_color),
+    shape = 21,
+    size = 5,
+    color = "black"
+  ) +
+
+  geom_vline(
+    xintercept = 0,
+    linetype = "dashed",
+    linewidth = 0.5
+  ) +
+
+  scale_color_identity() +
+  scale_fill_identity() +
+
+  labs(
+    x = expression("β (" * Omega[calcite] * ")"),
+    y = ""
+  ) +
+
+  theme_classic(base_size = 16) +
+
+  theme(
+    panel.border = element_rect(fill = NA, color = "black"),
+    legend.position = "none"
+  )
+
+SiteEffects_Calcite
+
+ggsave(
+  "Figures/Supplementary/OmegaCalcite_MainEffect_plot.svg",
+  plot = SiteEffects_Calcite,
+  width = 6,
+  height = 4.5,
+  units = "in",
+  dpi = 300
+)
+```
+
+# R2 statistics
+```{r}
+# =========================================================
+# R2 STATISTICS — OMEGA CALCITE
+# =========================================================
+
+models_calcite <- list(
+  "Test Biomineral Content" = model_biom_consistency_calcite,
+  "Test Thickness" = model_thi_consistency_calcite,
+  "Jaw Length" = model_jaw_len_consistency_calcite,
+  "Spine Biomineral Content" = model_spine_por_consistency_calcite,
+  "Spine Thickness" = model_spine_dia_consistency_calcite,
+  "Spine Length" = model_spine_len_consistency_calcite
+)
+
+r2_results_calcite <- lapply(names(models_calcite), function(trait){
+
+  r2 <- bayes_R2(models_calcite[[trait]])
+
+  data.frame(
+    Trait = trait,
+    Estimate = r2[, "Estimate"],
+    Est_Error = r2[, "Est.Error"],
+    Q2.5 = r2[, "Q2.5"],
+    Q97.5 = r2[, "Q97.5"]
+  )
+})
+
+r2_results_calcite <- dplyr::bind_rows(r2_results_calcite)
+
+write.csv(
+  r2_results_calcite,
+  "ResultsTables/r2_results_calcite_model.csv",
+  row.names = FALSE
+)
+```
+
+# Diagnostic plots
+```{r}
+# =========================================================
+# DIAGNOSTIC PLOTS — OMEGA CALCITE
+# =========================================================
+
+models_calcite <- list(
+  "Test_Biomineral_Content" = model_biom_consistency_calcite,
+  "Test_Thickness" = model_thi_consistency_calcite,
+  "Jaw_Length" = model_jaw_len_consistency_calcite,
+  "Spine_Biomineral_Content" = model_spine_por_consistency_calcite,
+  "Spine_Thickness" = model_spine_dia_consistency_calcite,
+  "Spine_Length" = model_spine_len_consistency_calcite
+)
+
+invisible(
+  lapply(names(models_calcite), function(name){
+
+    save_model_diagnostics(
+      models_calcite[[name]],
+      name,
+      "DiagnosticPlots/OmegaCalcite_models"
+    )
+
+  })
+)
+```
+# Extract posterior means
+```{r}
+
+# ==================================================
+# CALCITE OMEGA MODELS
+# EFFECTS REPORTED IN ORIGINAL TRAIT UNITS
+# ==================================================
+
+# ==================================================
+# 1. DEFINE MODELS
+# ==================================================
+
+models_calcite_original <- list(
+  "Test biomineral (%)" = model_biom_consistency_calcite,
+  "Test thickness (µm)" = model_thi_consistency_calcite,
+  "Jaw length (mm)" = model_jaw_len_consistency_calcite,
+  "Spine biomineral (%)" = model_spine_por_consistency_calcite,
+  "Spine thickness (µm)" = model_spine_dia_consistency_calcite,
+  "Spine length (mm)" = model_spine_len_consistency_calcite
+)
+
+
+# ==================================================
+# 2. DEFINE ORIGINAL TRAIT VARIABLES
+# ==================================================
+
+trait_variables_calcite <- c(
+  "Test biomineral (%)" = "Biomineral",
+  "Test thickness (µm)" = "ThicknessCT.um.",
+  "Jaw length (mm)" = "Jaw_length",
+  "Spine biomineral (%)" = "SpineBiomineral",
+  "Spine thickness (µm)" = "Spine_diameter",
+  "Spine length (mm)" = "Spine_length"
+)
+
+
+# ==================================================
+# 3. CALCULATE ORIGINAL TRAIT SDs
+# ==================================================
+
+trait_sd_calcite <- sapply(
+  trait_variables_calcite,
+  function(trait) {
+    sd(dat_all[[trait]], na.rm = TRUE)
+  }
+)
+
+# Convert spine diameter SD from mm to µm
+trait_sd_calcite["Spine thickness (µm)"] <-
+  trait_sd_calcite["Spine thickness (µm)"] * 1000
+
+trait_sd_calcite
+
+
+# ==================================================
+# 4. EXTRACT POSTERIOR DRAWS
+#    AND BACK-TRANSFORM TO ORIGINAL TRAIT UNITS
+# ==================================================
+
+extract_calcite_draws_original <- function(
+    model,
+    response_name
+) {
+
+  draws <- as_draws_df(model)
+
+  # SD of original response in reporting units
+  response_sd <- trait_sd_calcite[[response_name]]
+
+  # Reverse coefficient to represent decreasing calcite Omega
+  effect <- -draws[["b_Omega_calc_z"]]
+
+  # Convert standardised response effect
+  # into original trait measurement units
+  effect_original <- effect * response_sd
+
+  tibble(
+    response = response_name,
+    effect = effect_original
+  )
+}
+
+
+# ==================================================
+# 5. EXTRACT DRAWS FROM ALL SIX MODELS
+# ==================================================
+
+draws_calcite_original <- bind_rows(
+
+  lapply(
+    names(models_calcite_original),
+
+    function(response_name) {
+
+      extract_calcite_draws_original(
+        models_calcite_original[[response_name]],
+        response_name
+      )
+
+    }
+  )
+
+)
+
+
+# ==================================================
+# 6. SUMMARISE POSTERIOR
+#    MEAN AND 95% CREDIBLE INTERVAL
+# ==================================================
+
+effects_table_calcite_original <-
+
+  draws_calcite_original %>%
+
+  group_by(response) %>%
+
+  summarise(
+    Mean = mean(effect),
+    `2.5%` = quantile(effect, 0.025),
+    `97.5%` = quantile(effect, 0.975),
+    .groups = "drop"
+  )
+
+
+# ==================================================
+# 7. CREATE WIDE TABLE
+# ==================================================
+
+effects_table_calcite_original_wide <-
+
+  effects_table_calcite_original %>%
+
+  mutate(
+    response = factor(
+      response,
+      levels = c(
+        "Test biomineral (%)",
+        "Test thickness (µm)",
+        "Jaw length (mm)",
+        "Spine biomineral (%)",
+        "Spine thickness (µm)",
+        "Spine length (mm)"
+      )
+    )
+  ) %>%
+
+  pivot_wider(
+    names_from = response,
+    values_from = c(Mean, `2.5%`, `97.5%`),
+    names_glue = "{response}_{.value}"
+  ) %>%
+
+  select(
+    `Test biomineral (%)_Mean`,
+    `Test biomineral (%)_2.5%`,
+    `Test biomineral (%)_97.5%`,
+
+    `Test thickness (µm)_Mean`,
+    `Test thickness (µm)_2.5%`,
+    `Test thickness (µm)_97.5%`,
+
+    `Jaw length (mm)_Mean`,
+    `Jaw length (mm)_2.5%`,
+    `Jaw length (mm)_97.5%`,
+
+    `Spine biomineral (%)_Mean`,
+    `Spine biomineral (%)_2.5%`,
+    `Spine biomineral (%)_97.5%`,
+
+    `Spine thickness (µm)_Mean`,
+    `Spine thickness (µm)_2.5%`,
+    `Spine thickness (µm)_97.5%`,
+
+    `Spine length (mm)_Mean`,
+    `Spine length (mm)_2.5%`,
+    `Spine length (mm)_97.5%`
+  ) %>%
+
+  mutate(
+    across(
+      where(is.numeric),
+      ~ signif(.x, 3)
+    )
+  )
+
+
+# ==================================================
+# 8. INSPECT TABLE
+# ==================================================
+
+effects_table_calcite_original_wide
+
+
+# ==================================================
+# 9. SAVE TABLE
+# ==================================================
+
+write.csv(
+  effects_table_calcite_original_wide,
+  "ResultsTables/effects_table_omega_calcite_original_units.csv",
+  row.names = FALSE
+)
+
+```
+
+
+
+# pH x Absolute Latitude interaction models
+```{r}
+traits <- c(
+  "Biomineral",
+  "ThicknessCT.um.",
+  "Jaw_length",
+  "SpineBiomineral",
+  "Spine_diameter",
+  "Spine_length"
+)
+
+dat_all$Abs_lat_z <- as.numeric(scale(dat_all$Abs_lat))
+
+lat_mean <- mean(dat_all$Abs_lat)
+lat_sd   <- sd(dat_all$Abs_lat)
+
+pH_mean  <- mean(dat_all$median_pH)
+pH_sd    <- sd(dat_all$median_pH)
+
+lat_vals <- c(10, 25, 40)
+lat_vals_z <- (lat_vals - lat_mean) / lat_sd
+
+pH_lat_models <- list()
+
+for(trait in traits){
+
+  formula <- as.formula(
+    paste0(trait, " ~ 1 +
+           pH_z * Abs_lat_z +
+           TestDiameter_z +
+           (1 + pH_z || Genus) +
+           (1 | Analogue/SitePair)")
+  )
+
+  pH_lat_models[[trait]] <- brm(
+    formula = formula,
+    data = dat_all,
+    iter = 4000,
+    chains = 3,
+    cores = 3,
+    seed = 1999,
+    control = list(adapt_delta = 0.99,
+                   max_treedepth = 15)
+  )
+}
+
+size_corrected_data <- list()
+
+for(trait in traits){
+
+  mod <- pH_lat_models[[trait]]
+  beta_size <- fixef(mod)["TestDiameter_z","Estimate"]
+
+  tmp <- dat_all %>%
+    mutate(
+      trait_value = .data[[trait]],
+      trait_corr  = trait_value - beta_size * TestDiameter_z
+    )
+
+  size_corrected_data[[trait]] <- tmp
+}
+
+trait_to_label <- c(
+  Biomineral = "Predicted Test Biomineral (%)",
+  ThicknessCT.um. = "Predicted Test Thickness (µm)",
+  SpineBiomineral = "Predicted Spine Biomineral (%)",
+  Spine_diameter = "Predicted Spine Thickness (µm)",
+  Spine_length = "Predicted Spine Length (mm)",
+  Jaw_length = "Predicted Jaw Length (mm)"
+)
+
+fitted_plots <- list()
+
+for(trait in traits){
+
+  mod <- pH_lat_models[[trait]]
+
+  newdata <- expand.grid(
+    pH_z = seq(min(dat_all$pH_z),
+               max(dat_all$pH_z),
+               length.out = 100),
+    Abs_lat_z = lat_vals_z,
+    TestDiameter_z = 0
+  )
+
+  fitted <- add_epred_draws(mod,
+                            newdata = newdata,
+                            re_formula = NA)
+
+  fitted <- fitted %>%
+    mutate(
+      median_pH = pH_z * pH_sd + pH_mean,
+      Abs_lat   = Abs_lat_z * lat_sd + lat_mean,
+      lat_zone = case_when(
+        Abs_lat < 23.5 ~ 10,
+        Abs_lat <= 35  ~ 25,
+        Abs_lat > 35   ~ 40
+      ),
+      lat_label = factor(
+        lat_zone,
+        levels = c(40,25,10),
+        labels = c("40°","25°","10°")
+      )
+    )
+
+  fitted_summary <- fitted %>%
+    group_by(median_pH, lat_label) %>%
+    median_hdci(.epred, .width = c(0.95, 0.5)) %>%
+    ungroup() %>%
+    arrange(lat_label, median_pH)
+
+  hd95 <- fitted_summary %>% 
+    filter(.width == 0.95) %>% 
+    select(median_pH, lat_label,
+           hdi_95_low = .lower,
+           hdi_95_high = .upper)
+
+  hd50 <- fitted_summary %>% 
+    filter(.width == 0.5) %>% 
+    select(median_pH, lat_label,
+           hdi_50_low = .lower,
+           hdi_50_high = .upper)
+
+  median_vals <- fitted_summary %>% 
+    filter(.width == 0.95) %>% 
+    select(median_pH, lat_label,
+           median = .epred)
+
+  plot_data <- median_vals %>%
+    left_join(hd95, by = c("median_pH","lat_label")) %>%
+    left_join(hd50, by = c("median_pH","lat_label"))
+
+  overlay_data <- size_corrected_data[[trait]] %>%
+    mutate(
+      lat_zone = case_when(
+        Abs_lat < 23.5 ~ 10,
+        Abs_lat <= 35  ~ 25,
+        Abs_lat > 35   ~ 40
+      ),
+      lat_label = factor(
+        lat_zone,
+        levels = c(40,25,10),
+        labels = c("40°","25°","10°")
+      )
+    )
+
+  y_label <- trait_to_label[[trait]]
+
+  p <- ggplot(plot_data,
+              aes(x = median_pH, y = median)) +
+
+    geom_ribbon(aes(ymin = hdi_95_low,
+                    ymax = hdi_95_high,
+                    fill = lat_label,
+                    group = lat_label),
+                alpha = 0.2) +
+
+    geom_ribbon(aes(ymin = hdi_50_low,
+                    ymax = hdi_50_high,
+                    fill = lat_label,
+                    group = lat_label),
+                alpha = 0.4) +
+
+   geom_line(aes(group = lat_label),
+          color = "black",
+          size = 1) +
+
+    geom_point(data = overlay_data,
+               aes(x = median_pH,
+                   y = trait_corr,
+                   color = lat_label),
+               alpha = 0.6,
+               size = 2,
+               inherit.aes = FALSE) +
+
+    facet_wrap(~ lat_label) +
+
+    scale_fill_manual(values = c(
+      "40°" = "lightblue",
+      "25°" = "orange",
+      "10°" = "red"
+    )) +
+
+    scale_color_manual(values = c(
+      "40°" = "lightblue",
+      "25°" = "orange",
+      "10°" = "red"
+    )) +
+
+    scale_x_reverse(
+      limits = c(8.13, 7.53),
+      breaks = seq(7.6, 8.0, by = 0.2),
+      expand = c(0.02,0.02)
+    ) +
+
+    theme_classic(base_size = 16) +
+    theme(
+      legend.position = "none",
+      panel.border = element_rect(color = "black",
+                                  fill = NA,
+                                  size = 1),
+      strip.text = element_text(face = "bold")
+    ) +
+    labs(x = expression("pH"[T]), y = y_label)
+
+  fitted_plots[[trait]] <- p
+  print(p)
+}
+
+combined_pH_lat_line_plot <- wrap_plots(fitted_plots, ncol = 3)
+combined_pH_lat_line_plot
+
+ggsave(
+  "Figures/MainText/Combined_pH_lat_lineplots.svg",
+  combined_pH_lat_line_plot,
+  width = 16,
+  height = 8
+)
+```
+
+
+# R2 Statistics
+```{r}
+r2_results <- list()
+
+for(trait in traits){
+  
+  mod <- pH_lat_models[[trait]]
+  
+  r2 <- bayes_R2(mod)
+  
+  r2_results[[trait]] <- data.frame(
+    Trait = trait,
+    Estimate = r2[, "Estimate"],
+    Est_Error = r2[, "Est.Error"],
+    Q2.5 = r2[, "Q2.5"],
+    Q97.5 = r2[, "Q97.5"]
+  )
+}
+
+r2_results_pH_lat_interaction <- bind_rows(r2_results)
+
+r2_results_pH_lat_interaction
+
+write.csv(r2_results_pH_lat_interaction, "ResultsTables/r2_results_pH_x_Lat_interaction.csv", row.names = FALSE)
+```
+
+# Diagnostic plots
+```{r}
+models <- pH_lat_models
+
+invisible(
+  lapply(names(models), function(name){
+    save_model_diagnostics(models[[name]], name,
+                           "DiagnosticPlots/pH_Lat_models")
+  })
+)
+```
+
+
+# pH x Abs. Lat + pH var
+```{r}
+
+# ============================================================
+# MEDIAN pHT × LATITUDE MODELS, INCLUDING pHT VARIABILITY
+# ============================================================
+
+library(brms)
+library(dplyr)
+library(tidybayes)
+library(ggplot2)
+library(patchwork)
+
+# ------------------------------------------------------------
+# 1. Define traits
+# ------------------------------------------------------------
+
+traits <- c(
+  "Biomineral",
+  "ThicknessCT.um.",
+  "Jaw_length",
+  "SpineBiomineral",
+  "Spine_diameter",
+  "Spine_length"
+)
+
+
+# ------------------------------------------------------------
+# 2. Standardise environmental predictors at the site level
+# ------------------------------------------------------------
+exposure_units <- dat_all %>%
+  group_by(Analogue, SitePair) %>%
+  summarise(
+    median_pH = first(median_pH[!is.na(median_pH)]),
+    Abs_lat   = first(Abs_lat[!is.na(Abs_lat)]),
+    pH_var    = first(pH_var[!is.na(pH_var)]),
+    .groups = "drop"
+  )
+
+# Calculate means and SDs from independent exposure units
+
+pH_mean <- mean(exposure_units$median_pH, na.rm = TRUE)
+pH_sd   <- sd(exposure_units$median_pH, na.rm = TRUE)
+
+lat_mean <- mean(exposure_units$Abs_lat, na.rm = TRUE)
+lat_sd   <- sd(exposure_units$Abs_lat, na.rm = TRUE)
+
+pH_var_mean <- mean(exposure_units$pH_var, na.rm = TRUE)
+pH_var_sd   <- sd(exposure_units$pH_var, na.rm = TRUE)
+
+# Apply the same transformations to the individual-level dataset
+
+dat_all <- dat_all %>%
+  mutate(
+    median_pH_z = (median_pH - pH_mean) / pH_sd,
+    Abs_lat_z   = (Abs_lat - lat_mean) / lat_sd,
+    pH_var_z    = (pH_var - pH_var_mean) / pH_var_sd
+  )
+
+# Latitude values for predictions
+
+lat_vals <- c(10, 25, 40)
+
+lat_vals_z <- (lat_vals - lat_mean) / lat_sd
+
+
+# ------------------------------------------------------------
+# 3. Fit Bayesian mixed-effects models for all traits
+# ------------------------------------------------------------
+
+# Model:
+#
+# Trait ~ median pHT × absolute latitude
+#       + pHT variability
+#       + test diameter
+#       + random intercept and median pHT slope for Genus
+#       + random intercept for SitePair nested within Analogue
+#
+# pH variability is held constant in the predictions below,
+# but included as an additive predictor in the model.
+
+med_var_pH_lat_models <- list()
+
+for (trait in traits) {
+
+  message("Fitting model for: ", trait)
+
+  formula <- as.formula(
+    paste0(
+      trait,
+      " ~ 1 +
+       median_pH_z * Abs_lat_z +
+       pH_var_z +
+       TestDiameter_z +
+       (1 + median_pH_z || Genus) +
+       (1 | Analogue/SitePair)"
+    )
+  )
+
+  med_var_pH_lat_models[[trait]] <- brm(
+    formula = formula,
+    data = dat_all,
+    iter = 4000,
+    chains = 3,
+    cores = 3,
+    seed = 1999,
+    control = list(
+      adapt_delta = 0.99,
+      max_treedepth = 15
+    )
+  )
+}
+
+
+# ------------------------------------------------------------
+# 4. Inspect model summaries
+# ------------------------------------------------------------
+
+for (trait in traits) {
+
+  cat("\n\n========================================\n")
+  cat("TRAIT:", trait, "\n")
+  cat("========================================\n")
+
+  print(summary(med_var_pH_lat_models[[trait]]))
+}
+
+
+# ------------------------------------------------------------
+# 5. Size-correct observed trait values
+# ------------------------------------------------------------
+
+# Correct observed trait values to the expected value at mean
+# test diameter (TestDiameter_z = 0), using the posterior mean
+# estimate of the test diameter coefficient.
+
+size_corrected_data <- list()
+
+for (trait in traits) {
+
+  mod <- med_var_pH_lat_models[[trait]]
+
+  beta_size <- fixef(mod)["TestDiameter_z", "Estimate"]
+
+  tmp <- dat_all %>%
+    mutate(
+      trait_value = .data[[trait]],
+      trait_corr  = trait_value - beta_size * TestDiameter_z
+    )
+
+  size_corrected_data[[trait]] <- tmp
+}
+
+
+# ------------------------------------------------------------
+# 6. Define trait labels
+# ------------------------------------------------------------
+
+trait_to_label <- c(
+  Biomineral = "Predicted Test Biomineral (%)",
+  ThicknessCT.um. = "Predicted Test Thickness (µm)",
+  SpineBiomineral = "Predicted Spine Biomineral (%)",
+  Spine_diameter = "Predicted Spine Thickness (µm)",
+  Spine_length = "Predicted Spine Length (mm)",
+  Jaw_length = "Predicted Jaw Length (mm)"
+)
+
+
+# ------------------------------------------------------------
+# 7. Generate predictions and plots for each trait
+# ------------------------------------------------------------
+
+fitted_plots <- list()
+
+for (trait in traits) {
+
+  message("Generating plot for: ", trait)
+
+  mod <- med_var_pH_lat_models[[trait]]
+
+  # Prediction grid:
+  # - median pHT varies across the observed range
+  # - latitude is fixed at 10°, 25° and 40°
+  # - test diameter is held at its mean
+  # - pHT variability is held at its mean
+
+  newdata <- expand.grid(
+    median_pH_z = seq(
+      min(dat_all$median_pH_z, na.rm = TRUE),
+      max(dat_all$median_pH_z, na.rm = TRUE),
+      length.out = 100
+    ),
+    Abs_lat_z = lat_vals_z,
+    TestDiameter_z = 0,
+    pH_var_z = 0
+  )
+
+  # Population-level predictions (excluding random effects)
+
+  fitted <- add_epred_draws(
+    mod,
+    newdata = newdata,
+    re_formula = NA
+  )
+
+  # Convert standardised predictors back to their original scales
+
+  fitted <- fitted %>%
+    mutate(
+      median_pH = median_pH_z * pH_sd + pH_mean,
+      Abs_lat   = Abs_lat_z * lat_sd + lat_mean,
+
+      lat_label = factor(
+        round(Abs_lat),
+        levels = c(40, 25, 10),
+        labels = c("40°", "25°", "10°")
+      )
+    )
+
+  # Summarise posterior predictions
+
+  fitted_summary <- fitted %>%
+    group_by(median_pH, lat_label) %>%
+    median_hdci(
+      .epred,
+      .width = c(0.95, 0.5)
+    ) %>%
+    ungroup() %>%
+    arrange(lat_label, median_pH)
+
+  # 95% HDI
+
+  hd95 <- fitted_summary %>%
+    filter(.width == 0.95) %>%
+    select(
+      median_pH,
+      lat_label,
+      hdi_95_low = .lower,
+      hdi_95_high = .upper
+    )
+
+  # 50% HDI
+
+  hd50 <- fitted_summary %>%
+    filter(.width == 0.5) %>%
+    select(
+      median_pH,
+      lat_label,
+      hdi_50_low = .lower,
+      hdi_50_high = .upper
+    )
+
+  # Posterior median
+
+  median_vals <- fitted_summary %>%
+    filter(.width == 0.95) %>%
+    select(
+      median_pH,
+      lat_label,
+      median = .epred
+    )
+
+  # Combine posterior medians and HDIs
+
+  plot_data <- median_vals %>%
+    left_join(
+      hd95,
+      by = c("median_pH", "lat_label")
+    ) %>%
+    left_join(
+      hd50,
+      by = c("median_pH", "lat_label")
+    )
+
+
+  # ----------------------------------------------------------
+  # Observed data overlay
+  # ----------------------------------------------------------
+
+  overlay_data <- size_corrected_data[[trait]] %>%
+    mutate(
+      lat_zone = case_when(
+        Abs_lat < 23.5 ~ 10,
+        Abs_lat <= 35  ~ 25,
+        Abs_lat > 35   ~ 40
+      ),
+
+      lat_label = factor(
+        lat_zone,
+        levels = c(40, 25, 10),
+        labels = c("40°", "25°", "10°")
+      )
+    )
+
+
+  # ----------------------------------------------------------
+  # Plot
+  # ----------------------------------------------------------
+
+  y_label <- trait_to_label[[trait]]
+
+  p <- ggplot(
+    plot_data,
+    aes(x = median_pH, y = median)
+  ) +
+
+    # 95% HDI
+
+    geom_ribbon(
+      aes(
+        ymin = hdi_95_low,
+        ymax = hdi_95_high,
+        fill = lat_label,
+        group = lat_label
+      ),
+      alpha = 0.2
+    ) +
+
+    # 50% HDI
+
+    geom_ribbon(
+      aes(
+        ymin = hdi_50_low,
+        ymax = hdi_50_high,
+        fill = lat_label,
+        group = lat_label
+      ),
+      alpha = 0.4
+    ) +
+
+    # Posterior median prediction
+
+    geom_line(
+      aes(group = lat_label),
+      color = "black",
+      linewidth = 1
+    ) +
+
+    # Size-corrected observed values
+
+    geom_point(
+      data = overlay_data,
+      aes(
+        x = median_pH,
+        y = trait_corr,
+        color = lat_label
+      ),
+      alpha = 0.6,
+      size = 2,
+      inherit.aes = FALSE
+    ) +
+
+    facet_wrap(~ lat_label) +
+
+    scale_fill_manual(
+      values = c(
+        "40°" = "lightblue",
+        "25°" = "orange",
+        "10°" = "red"
+      )
+    ) +
+
+    scale_color_manual(
+      values = c(
+        "40°" = "lightblue",
+        "25°" = "orange",
+        "10°" = "red"
+      )
+    ) +
+
+    scale_x_reverse(
+      limits = c(8.13, 7.53),
+      breaks = seq(7.6, 8.0, by = 0.2),
+      expand = c(0.02, 0.02)
+    ) +
+
+    theme_classic(base_size = 16) +
+
+    theme(
+      legend.position = "none",
+      panel.border = element_rect(
+        color = "black",
+        fill = NA,
+        linewidth = 1
+      ),
+      strip.text = element_text(face = "bold")
+    ) +
+
+    labs(
+      x = expression("pH"[T]),
+      y = y_label
+    )
+
+  fitted_plots[[trait]] <- p
+
+  print(p)
+}
+
+
+# ------------------------------------------------------------
+# 8. Combine all six plots
+# ------------------------------------------------------------
+
+combined_med_var_pH_lat_line_plot <- wrap_plots(
+  fitted_plots,
+  ncol = 3
+)
+
+combined_med_var_pH_lat_line_plot
+
+
+# ------------------------------------------------------------
+# 9. Save figure
+# ------------------------------------------------------------
+
+ggsave(
+  "Figures/MainText/Combined_med_var_pH_lat_lineplots.svg",
+  combined_med_var_pH_lat_line_plot,
+  width = 16,
+  height = 8
+)
+```
+
+# R2 Statistics
+```{r}
+r2_results <- list()
+
+for(trait in traits){
+  
+  mod <- med_var_pH_lat_models[[trait]]
+  
+  r2 <- bayes_R2(mod)
+  
+  r2_results[[trait]] <- data.frame(
+    Trait = trait,
+    Estimate = r2[, "Estimate"],
+    Est_Error = r2[, "Est.Error"],
+    Q2.5 = r2[, "Q2.5"],
+    Q97.5 = r2[, "Q97.5"]
+  )
+}
+
+r2_results_med_var_pH_lat_interaction <- bind_rows(r2_results)
+
+r2_results_med_var_pH_lat_interaction
+
+write.csv(r2_results_med_var_pH_lat_interaction, "ResultsTables/r2_results_med_var_pH_x_Lat_interaction.csv", row.names = FALSE)
+```
+
+# Extract posterior means and HDIs
+```{r}
+# ============================================================
+# EXTRACT POSTERIOR DRAWS FOR ALL FIVE PREDICTORS
+# MEDIAN pHT × LATITUDE MODELS, INCLUDING pHT VARIABILITY
+# ============================================================
+
+library(brms)
+library(posterior)
+library(dplyr)
+library(tidyr)
+library(tibble)
+
+
+# ------------------------------------------------------------
+# 1. Define models
+# ------------------------------------------------------------
+
+models_med_var_pH_lat <- list(
+  "Test biomineral (%)" = med_var_pH_lat_models[["Biomineral"]],
+  "Test thickness (µm)" = med_var_pH_lat_models[["ThicknessCT.um."]],
+  "Jaw length (mm)" = med_var_pH_lat_models[["Jaw_length"]],
+  "Spine biomineral (%)" = med_var_pH_lat_models[["SpineBiomineral"]],
+  "Spine thickness (µm)" = med_var_pH_lat_models[["Spine_diameter"]],
+  "Spine length (mm)" = med_var_pH_lat_models[["Spine_length"]]
+)
+
+
+# ------------------------------------------------------------
+# 2. Define model parameters and labels
+# ------------------------------------------------------------
+
+parameters <- tibble(
+  parameter = c(
+    "b_TestDiameter_z",
+    "b_median_pH_z",
+    "b_Abs_lat_z",
+    "b_median_pH_z:Abs_lat_z",
+    "b_pH_var_z"
+  ),
+
+  predictor = c(
+    "Test diameter",
+    "Decreasing median pHT",
+    "Absolute latitude",
+    "Decreasing median pHT × absolute latitude",
+    "pHT variability"
+  ),
+
+  reverse = c(
+    FALSE,
+    TRUE,
+    FALSE,
+    TRUE,
+    FALSE
+  )
+)
+
+
+# ------------------------------------------------------------
+# 3. Extract posterior draws
+# ------------------------------------------------------------
+
+extract_all_draws <- function(model, response_name) {
+
+  draws <- as_draws_df(model)
+
+  bind_rows(
+    lapply(seq_len(nrow(parameters)), function(i) {
+
+      param <- parameters$parameter[i]
+
+      effect <- draws[[param]]
+
+      # Reverse median pHT and its interaction with latitude
+      # to represent decreasing median pHT
+      if (parameters$reverse[i]) {
+        effect <- -effect
+      }
+
+      # Convert spine thickness from mm to µm
+      if (response_name == "Spine thickness (µm)") {
+        effect <- effect * 1000
+      }
+
+      tibble(
+        response = response_name,
+        predictor = parameters$predictor[i],
+        effect = effect
+      )
+
+    })
+  )
+}
+
+
+draws_all <- bind_rows(
+  lapply(names(models_med_var_pH_lat), function(response_name) {
+
+    extract_all_draws(
+      models_med_var_pH_lat[[response_name]],
+      response_name
+    )
+
+  })
+)
+
+
+# ------------------------------------------------------------
+# 4. Summarise posterior estimates
+# Mean and 95% credible interval
+# ------------------------------------------------------------
+
+effects_table_med_var_pH_lat <- draws_all %>%
+  group_by(predictor, response) %>%
+  summarise(
+    Mean = mean(effect),
+    `2.5%` = quantile(effect, 0.025),
+    `97.5%` = quantile(effect, 0.975),
+    .groups = "drop"
+  )
+
+
+# ------------------------------------------------------------
+# 5. Create wide table
+# ------------------------------------------------------------
+
+effects_table_med_var_pH_lat_wide <- effects_table_med_var_pH_lat %>%
+
+  mutate(
+    predictor = factor(
+      predictor,
+      levels = c(
+        "Test diameter",
+        "Decreasing median pHT",
+        "Absolute latitude",
+        "Decreasing median pHT × absolute latitude",
+        "pHT variability"
+      )
+    ),
+
+    response = factor(
+      response,
+      levels = c(
+        "Test biomineral (%)",
+        "Test thickness (µm)",
+        "Jaw length (mm)",
+        "Spine biomineral (%)",
+        "Spine thickness (µm)",
+        "Spine length (mm)"
+      )
+    )
+  ) %>%
+
+  pivot_wider(
+    names_from = response,
+    values_from = c(Mean, `2.5%`, `97.5%`),
+    names_glue = "{response}_{.value}"
+  ) %>%
+
+  arrange(predictor) %>%
+
+  # Reorder columns by trait, with Mean, 2.5%, 97.5%
+  select(
+    predictor,
+
+    `Test biomineral (%)_Mean`,
+    `Test biomineral (%)_2.5%`,
+    `Test biomineral (%)_97.5%`,
+
+    `Test thickness (µm)_Mean`,
+    `Test thickness (µm)_2.5%`,
+    `Test thickness (µm)_97.5%`,
+
+    `Jaw length (mm)_Mean`,
+    `Jaw length (mm)_2.5%`,
+    `Jaw length (mm)_97.5%`,
+
+    `Spine biomineral (%)_Mean`,
+    `Spine biomineral (%)_2.5%`,
+    `Spine biomineral (%)_97.5%`,
+
+    `Spine thickness (µm)_Mean`,
+    `Spine thickness (µm)_2.5%`,
+    `Spine thickness (µm)_97.5%`,
+
+    `Spine length (mm)_Mean`,
+    `Spine length (mm)_2.5%`,
+    `Spine length (mm)_97.5%`
+  ) %>%
+
+  # Round all estimates to 3 significant figures
+  mutate(
+    across(
+      where(is.numeric),
+      ~ signif(.x, 3)
+    )
+  )
+
+
+# ------------------------------------------------------------
+# 6. Inspect table
+# ------------------------------------------------------------
+
+effects_table_med_var_pH_lat_wide
+
+
+# ------------------------------------------------------------
+# 7. Save table
+# ------------------------------------------------------------
+write.csv(
+  effects_table_med_var_pH_lat_wide,
+  "ResultsTables/effects_table_med_var_pH_lat_models.csv",
+  row.names = FALSE
+)
+```
+
+
+# pH regime x Latitude models (no Whakaari / White Island)
+```{r}
+# ============================================================
+# pH x ABSOLUTE LATITUDE INTERACTION MODELS
+# SENSITIVITY ANALYSIS EXCLUDING WHITE ISLAND / WHAKAARI
+#
+# Responses:
+#   Original, unstandardised trait measurements
+#
+# Predictors:
+#   Standardised median pHT
+#   Standardised absolute latitude
+#   Standardised test diameter
+#   pHT variability (standardised within the model)
+#
+# Random effects:
+#   (1 + pH_z || Genus) + (1 | Analogue/SitePair)
+#
+# Outputs:
+#   1. Six Bayesian interaction models
+#   2. Six fitted latitude-interaction plots
+#   3. Combined six-panel figure
+#   4. Bayesian R2 table
+#   5. Model diagnostic plots
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. Prepare dataset
+# ------------------------------------------------------------
+
+# dat_no_whakaari already excludes White Island / Whakaari.
+#
+# median_pH_z is the standardised median pHT variable
+# calculated for the reduced dataset.
+
+dat_no_whakaari <- dat_no_whakaari %>%
+  mutate(
+    Abs_lat_z = as.numeric(scale(Abs_lat)),
+    pH_z = median_pH_z
+  )
+
+
+# ------------------------------------------------------------
+# 2. Calculate reduced-dataset predictor means and SDs
+# ------------------------------------------------------------
+
+lat_mean_no_whakaari <- mean(
+  dat_no_whakaari$Abs_lat,
+  na.rm = TRUE
+)
+
+lat_sd_no_whakaari <- sd(
+  dat_no_whakaari$Abs_lat,
+  na.rm = TRUE
+)
+
+pH_mean_no_whakaari <- mean(
+  dat_no_whakaari$median_pH,
+  na.rm = TRUE
+)
+
+pH_sd_no_whakaari <- sd(
+  dat_no_whakaari$median_pH,
+  na.rm = TRUE
+)
+
+
+# ------------------------------------------------------------
+# 3. Define latitude prediction values
+# ------------------------------------------------------------
+
+lat_vals <- c(10, 25, 40)
+
+lat_vals_z_no_whakaari <- (
+  lat_vals - lat_mean_no_whakaari
+) / lat_sd_no_whakaari
+
+
+# ------------------------------------------------------------
+# 4. Define original response variables
+# ------------------------------------------------------------
+
+traits_raw <- c(
+  "Biomineral",
+  "ThicknessCT.um.",
+  "Jaw_length",
+  "SpineBiomineral",
+  "Spine_diameter",
+  "Spine_length"
+)
+
+
+# ------------------------------------------------------------
+# 5. Define response labels
+# ------------------------------------------------------------
+
+trait_to_label_original <- c(
+  Biomineral = "Predicted Test Biomineral (%)",
+  ThicknessCT.um. = "Predicted Test Thickness (µm)",
+  Jaw_length = "Predicted Jaw Length (mm)",
+  SpineBiomineral = "Predicted Spine Biomineral (%)",
+  Spine_diameter = "Predicted Spine Thickness (µm)",
+  Spine_length = "Predicted Spine Length (mm)"
+)
+
+
+# ------------------------------------------------------------
+# 6. Fit six Bayesian pH x latitude interaction models
+#
+# Responses are in original measurement units.
+# Predictors are standardised.
+# ------------------------------------------------------------
+
+pH_lat_models_no_whakaari <- list()
+
+for (trait in traits_raw) {
+
+  formula <- as.formula(
+    paste0(
+      "`", trait, "` ~ 1 +
+        pH_z * Abs_lat_z +
+        scale(pH_var) +
+        TestDiameter_z +
+        (1 + pH_z || Genus) +
+        (1 | Analogue/SitePair)"
+    )
+  )
+
+  cat("\nFitting model:", trait, "\n")
+
+  pH_lat_models_no_whakaari[[trait]] <- brm(
+    formula = formula,
+    data = dat_no_whakaari,
+    iter = 4000,
+    chains = 3,
+    cores = 3,
+    seed = 1999,
+    control = list(
+      adapt_delta = 0.99,
+      max_treedepth = 15
+    )
+  )
+}
+
+
+# ------------------------------------------------------------
+# 7. Size-correct observed data
+#
+# Original measurement units.
+#
+# Correct observations for test diameter using the
+# posterior mean fixed-effect coefficient.
+# ------------------------------------------------------------
+
+size_corrected_data_no_whakaari <- list()
+
+for (trait in traits_raw) {
+
+  mod <- pH_lat_models_no_whakaari[[trait]]
+
+  # Extract test diameter coefficient
+  # Already expressed in original response units
+  beta_size_original <- fixef(mod)[
+    "TestDiameter_z",
+    "Estimate"
+  ]
+
+  # Original response variable
+  tmp <- dat_no_whakaari %>%
+    mutate(
+      trait_value = .data[[trait]],
+
+      trait_corr = trait_value -
+        beta_size_original * TestDiameter_z
+    )
+
+  size_corrected_data_no_whakaari[[trait]] <- tmp
+}
+
+
+# ============================================================
+# 8. Generate fitted latitude-interaction plots
+# ============================================================
+
+fitted_plots_no_whakaari <- list()
+
+for (trait in traits_raw) {
+
+  cat("\nGenerating plot:", trait, "\n")
+
+  mod <- pH_lat_models_no_whakaari[[trait]]
+
+
+  # ----------------------------------------------------------
+  # 8.1 Prediction grid
+  # ----------------------------------------------------------
+
+  newdata <- expand.grid(
+    pH_z = seq(
+      min(dat_no_whakaari$pH_z, na.rm = TRUE),
+      max(dat_no_whakaari$pH_z, na.rm = TRUE),
+      length.out = 100
+    ),
+
+    Abs_lat_z = lat_vals_z_no_whakaari,
+
+    TestDiameter_z = 0,
+
+    pH_var = mean(
+      dat_no_whakaari$pH_var,
+      na.rm = TRUE
+    )
+  )
+
+
+  # ----------------------------------------------------------
+  # 8.2 Posterior predictions
+  #
+  # Population-level predictions:
+  # random effects excluded.
+  # ----------------------------------------------------------
+
+  fitted <- add_epred_draws(
+    mod,
+    newdata = newdata,
+    re_formula = NA
+  )
+
+
+  # ----------------------------------------------------------
+  # 8.3 Convert predictors back to original scales
+  # ----------------------------------------------------------
+
+  fitted <- fitted %>%
+    mutate(
+      median_pH =
+        pH_z * pH_sd_no_whakaari +
+        pH_mean_no_whakaari,
+
+      Abs_lat =
+        Abs_lat_z * lat_sd_no_whakaari +
+        lat_mean_no_whakaari,
+
+      lat_zone = case_when(
+        Abs_lat < 23.5 ~ 10,
+        Abs_lat <= 35 ~ 25,
+        Abs_lat > 35 ~ 40
+      ),
+
+      lat_label = factor(
+        lat_zone,
+        levels = c(40, 25, 10),
+        labels = c("40°", "25°", "10°")
+      )
+    )
+
+
+  # ----------------------------------------------------------
+  # 8.4 Summarise posterior predictions
+  #
+  # Predictions are already in original measurement units.
+  # No response back-transformation is required.
+  # ----------------------------------------------------------
+
+  fitted_summary <- fitted %>%
+    group_by(median_pH, lat_label) %>%
+    median_hdci(
+      .epred,
+      .width = c(0.95, 0.5)
+    ) %>%
+    ungroup() %>%
+    arrange(lat_label, median_pH)
+
+
+  # ----------------------------------------------------------
+  # 8.5 Extract 95% HDI
+  # ----------------------------------------------------------
+
+  hd95 <- fitted_summary %>%
+    filter(.width == 0.95) %>%
+    select(
+      median_pH,
+      lat_label,
+      hdi_95_low = .lower,
+      hdi_95_high = .upper
+    )
+
+
+  # ----------------------------------------------------------
+  # 8.6 Extract 50% HDI
+  # ----------------------------------------------------------
+
+  hd50 <- fitted_summary %>%
+    filter(.width == 0.5) %>%
+    select(
+      median_pH,
+      lat_label,
+      hdi_50_low = .lower,
+      hdi_50_high = .upper
+    )
+
+
+  # ----------------------------------------------------------
+  # 8.7 Extract posterior median predictions
+  # ----------------------------------------------------------
+
+  median_vals <- fitted_summary %>%
+    filter(.width == 0.95) %>%
+    select(
+      median_pH,
+      lat_label,
+      median = .epred
+    )
+
+
+  # ----------------------------------------------------------
+  # 8.8 Combine prediction summaries
+  # ----------------------------------------------------------
+
+  plot_data <- median_vals %>%
+    left_join(
+      hd95,
+      by = c("median_pH", "lat_label")
+    ) %>%
+    left_join(
+      hd50,
+      by = c("median_pH", "lat_label")
+    )
+
+
+  # ----------------------------------------------------------
+  # 8.9 Prepare size-corrected observed data
+  # ----------------------------------------------------------
+
+  overlay_data <- size_corrected_data_no_whakaari[[trait]] %>%
+    mutate(
+      lat_zone = case_when(
+        Abs_lat < 23.5 ~ 10,
+        Abs_lat <= 35 ~ 25,
+        Abs_lat > 35 ~ 40
+      ),
+
+      lat_label = factor(
+        lat_zone,
+        levels = c(40, 25, 10),
+        labels = c("40°", "25°", "10°")
+      )
+    )
+
+
+  # ----------------------------------------------------------
+  # 8.10 Plot
+  # ----------------------------------------------------------
+
+  y_label <- trait_to_label_original[[trait]]
+
+  p <- ggplot(
+    plot_data,
+    aes(
+      x = median_pH,
+      y = median
+    )
+  ) +
+
+    # 95% HDI
+    geom_ribbon(
+      aes(
+        ymin = hdi_95_low,
+        ymax = hdi_95_high,
+        fill = lat_label,
+        group = lat_label
+      ),
+      alpha = 0.2
+    ) +
+
+    # 50% HDI
+    geom_ribbon(
+      aes(
+        ymin = hdi_50_low,
+        ymax = hdi_50_high,
+        fill = lat_label,
+        group = lat_label
+      ),
+      alpha = 0.4
+    ) +
+
+    # Posterior median
+    geom_line(
+      aes(group = lat_label),
+      color = "black",
+      linewidth = 1
+    ) +
+
+    # Size-corrected observed values
+    geom_point(
+      data = overlay_data,
+      aes(
+        x = median_pH,
+        y = trait_corr,
+        color = lat_label
+      ),
+      alpha = 0.6,
+      size = 2,
+      inherit.aes = FALSE
+    ) +
+
+    # Separate latitude panels
+    facet_wrap(~ lat_label) +
+
+    scale_fill_manual(
+      values = c(
+        "40°" = "lightblue",
+        "25°" = "orange",
+        "10°" = "red"
+      )
+    ) +
+
+    scale_color_manual(
+      values = c(
+        "40°" = "lightblue",
+        "25°" = "orange",
+        "10°" = "red"
+      )
+    ) +
+
+    # Lower pHT to the right
+    scale_x_reverse(
+      limits = c(8.13, 7.53),
+      breaks = seq(7.6, 8.0, by = 0.2),
+      expand = c(0.02, 0.02)
+    ) +
+
+    theme_classic(base_size = 16) +
+
+    theme(
+      legend.position = "none",
+
+      panel.border = element_rect(
+        color = "black",
+        fill = NA,
+        linewidth = 1
+      ),
+
+      strip.text = element_text(
+        face = "bold"
+      )
+    ) +
+
+    labs(
+      x = expression("pH"[T]),
+      y = y_label
+    )
+
+
+  # ----------------------------------------------------------
+  # 8.11 Store and display plot
+  # ----------------------------------------------------------
+
+  fitted_plots_no_whakaari[[trait]] <- p
+
+  print(p)
+
+}
+
+
+# ============================================================
+# 9. Combine six plots
+# ============================================================
+
+combined_pH_lat_line_plot_no_whakaari <-
+  wrap_plots(
+    fitted_plots_no_whakaari,
+    ncol = 3
+  )
+
+combined_pH_lat_line_plot_no_whakaari
+
+
+# ------------------------------------------------------------
+# 10. Save combined figure
+# ------------------------------------------------------------
+
+dir.create(
+  "Figures/Supplementary",
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+ggsave(
+  "Figures/Supplementary/Combined_pH_lat_lineplots_excluding_WhiteIsland_original_units.svg",
+  combined_pH_lat_line_plot_no_whakaari,
+  width = 16,
+  height = 8
+)
+
+
+# ============================================================
+# 11. Bayesian R2 statistics
+# ============================================================
+
+r2_results_no_whakaari <- list()
+
+for (trait in traits_raw) {
+
+  mod <- pH_lat_models_no_whakaari[[trait]]
+
+  r2 <- bayes_R2(mod)
+
+  r2_results_no_whakaari[[trait]] <- data.frame(
+    Trait = trait_to_label_original[[trait]],
+
+    Estimate = r2[, "Estimate"],
+
+    Est_Error = r2[, "Est.Error"],
+
+    Q2.5 = r2[, "Q2.5"],
+
+    Q97.5 = r2[, "Q97.5"]
+  )
+}
+
+
+# ------------------------------------------------------------
+# 12. Combine R2 results
+# ------------------------------------------------------------
+
+r2_results_pH_lat_interaction_no_whakaari <-
+  bind_rows(r2_results_no_whakaari)
+
+
+# Display R2 table
+r2_results_pH_lat_interaction_no_whakaari
+
+
+# ------------------------------------------------------------
+# 13. Save R2 table
+# ------------------------------------------------------------
+
+dir.create(
+  "ResultsTables",
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+write.csv(
+  r2_results_pH_lat_interaction_no_whakaari,
+  "ResultsTables/r2_results_pH_x_Lat_interaction_excluding_WhiteIsland_original_units.csv",
+  row.names = FALSE
+)
+
+saveRDS(
+  r2_results_pH_lat_interaction_no_whakaari,
+  "ResultsTables/r2_results_pH_x_Lat_interaction_excluding_WhiteIsland_original_units.rds"
+)
+
+
+# ============================================================
+# 14. Model diagnostic plots
+# ============================================================
+
+save_model_diagnostics <- function(
+  model,
+  model_name,
+  folder
+) {
+
+  dir.create(
+    folder,
+    recursive = TRUE,
+    showWarnings = FALSE
+  )
+
+  # brms posterior parameter plots
+  brms_plots <- plot(model)
+
+  posterior_hist <- brms_plots[[1]]
+
+  posterior_trace <- brms_plots[[2]]
+
+
+  # Posterior predictive check
+  pp <- pp_check(model) +
+    ggtitle("Posterior predictive check")
+
+
+  # Combine diagnostics
+  combined <- arrangeGrob(
+    posterior_hist,
+    posterior_trace,
+    pp,
+    ncol = 1,
+    heights = c(1, 1, 1.1)
+  )
+
+
+  # Save diagnostic figure
+  ggsave(
+    filename = paste0(
+      folder,
+      "/",
+      model_name,
+      "_ALL_diagnostics.png"
+    ),
+
+    plot = combined,
+
+    width = 10,
+    height = 16,
+    dpi = 300
+  )
+
+}
+
+
+# ------------------------------------------------------------
+# 15. Run diagnostics for all six models
+# ------------------------------------------------------------
+
+models_no_whakaari <- pH_lat_models_no_whakaari
+
+invisible(
+  lapply(
+    names(models_no_whakaari),
+
+    function(name) {
+
+      save_model_diagnostics(
+        models_no_whakaari[[name]],
+        name,
+        "DiagnosticPlots/pH_Lat_models/NoWhiteIsland"
+      )
+
+    }
+  )
+)
+
+
+# ============================================================
+# 16. Final confirmation
+# ============================================================
+
+cat("\nModels fitted:\n")
+
+print(names(pH_lat_models_no_whakaari))
+
+
+cat("\nBayesian R2:\n")
+
+print(r2_results_pH_lat_interaction_no_whakaari)
+
+
+cat("\nCombined figure:\n")
+
+print(combined_pH_lat_line_plot_no_whakaari)
+```
+
+
+# Extract posterior means
+```{r}
+
+# ============================================================
+# EXTRACT POSTERIOR EFFECTS
+# pH × ABSOLUTE LATITUDE MODELS
+# EXCLUDING WHITE ISLAND / WHAKAARI
+#
+# Responses: Original measurement units
+# Effects: Posterior means and 95% credible intervals
+# ============================================================
+
+
+# ------------------------------------------------------------
+# 1. Define models
+# ------------------------------------------------------------
+
+models_no_whakaari <- list(
+  "Test biomineral (%)" =
+    pH_lat_models_no_whakaari[["Biomineral"]],
+
+  "Test thickness (µm)" =
+    pH_lat_models_no_whakaari[["ThicknessCT.um."]],
+
+  "Jaw length (mm)" =
+    pH_lat_models_no_whakaari[["Jaw_length"]],
+
+  "Spine biomineral (%)" =
+    pH_lat_models_no_whakaari[["SpineBiomineral"]],
+
+  "Spine thickness (µm)" =
+    pH_lat_models_no_whakaari[["Spine_diameter"]],
+
+  "Spine length (mm)" =
+    pH_lat_models_no_whakaari[["Spine_length"]]
+)
+
+
+# ------------------------------------------------------------
+# 2. Define parameters and predictor labels
+# ------------------------------------------------------------
+
+parameters <- c(
+  "b_TestDiameter_z" = "Test diameter",
+  "b_pH_z" = "Decreasing median pHT",
+  "b_Abs_lat_z" = "Absolute latitude",
+  "b_pH_z:Abs_lat_z" = "Decreasing median pHT × absolute latitude",
+  "b_scalepH_var" = "pHT variability"
+)
+
+
+# ------------------------------------------------------------
+# 3. Extract posterior draws
+# ------------------------------------------------------------
+
+extract_effects <- function(model, response_name) {
+
+  draws <- as_draws_df(model)
+
+  bind_rows(
+    lapply(names(parameters), function(param) {
+
+      # Handle either possible interaction parameter ordering
+
+      actual_param <- param
+
+      if (
+        param == "b_pH_z:Abs_lat_z" &&
+        !actual_param %in% names(draws)
+      ) {
+        actual_param <- "b_Abs_lat_z:pH_z"
+      }
+
+      if (!actual_param %in% names(draws)) {
+        stop(
+          paste(
+            "Parameter not found:",
+            param,
+            "in model:",
+            response_name,
+            "\nAvailable parameters:",
+            paste(names(draws), collapse = ", ")
+          )
+        )
+      }
+
+      effect <- draws[[actual_param]]
+
+      # Reverse signs to express effects of decreasing pHT
+
+      if (param %in% c("b_pH_z", "b_pH_z:Abs_lat_z")) {
+        effect <- -effect
+      }
+
+      # Convert spine thickness from mm to µm only
+
+      if (response_name == "Spine thickness (µm)") {
+        effect <- effect * 1000
+      }
+
+      tibble(
+        response = response_name,
+        predictor = parameters[[param]],
+        effect = effect
+      )
+
+    })
+  )
+}
+
+
+# ------------------------------------------------------------
+# 4. Extract effects from all six models
+# ------------------------------------------------------------
+
+posterior_effects_no_whakaari <- bind_rows(
+  lapply(names(models_no_whakaari), function(response_name) {
+
+    extract_effects(
+      models_no_whakaari[[response_name]],
+      response_name
+    )
+
+  })
+)
+
+
+# ------------------------------------------------------------
+# 5. Calculate posterior means and 95% credible intervals
+# ------------------------------------------------------------
+
+effects_summary_no_whakaari <- posterior_effects_no_whakaari %>%
+
+  group_by(predictor, response) %>%
+
+  summarise(
+    Mean = mean(effect),
+    `2.5%` = quantile(effect, 0.025),
+    `97.5%` = quantile(effect, 0.975),
+    .groups = "drop"
+  )
+
+
+# ------------------------------------------------------------
+# 6. Set predictor and response order
+# ------------------------------------------------------------
+
+effects_summary_no_whakaari <- effects_summary_no_whakaari %>%
+
+  mutate(
+    predictor = factor(
+      predictor,
+      levels = c(
+        "Test diameter",
+        "Decreasing median pHT",
+        "Absolute latitude",
+        "Decreasing median pHT × absolute latitude",
+        "pHT variability"
+      )
+    ),
+
+    response = factor(
+      response,
+      levels = c(
+        "Test biomineral (%)",
+        "Test thickness (µm)",
+        "Jaw length (mm)",
+        "Spine biomineral (%)",
+        "Spine thickness (µm)",
+        "Spine length (mm)"
+      )
+    )
+  )
+
+
+# ------------------------------------------------------------
+# 7. Convert to wide table
+# ------------------------------------------------------------
+
+effects_table_no_whakaari <- effects_summary_no_whakaari %>%
+
+  pivot_wider(
+    names_from = response,
+    values_from = c(Mean, `2.5%`, `97.5%`),
+    names_glue = "{response}_{.value}"
+  ) %>%
+
+  arrange(predictor) %>%
+
+  select(
+    predictor,
+
+    `Test biomineral (%)_Mean`,
+    `Test biomineral (%)_2.5%`,
+    `Test biomineral (%)_97.5%`,
+
+    `Test thickness (µm)_Mean`,
+    `Test thickness (µm)_2.5%`,
+    `Test thickness (µm)_97.5%`,
+
+    `Jaw length (mm)_Mean`,
+    `Jaw length (mm)_2.5%`,
+    `Jaw length (mm)_97.5%`,
+
+    `Spine biomineral (%)_Mean`,
+    `Spine biomineral (%)_2.5%`,
+    `Spine biomineral (%)_97.5%`,
+
+    `Spine thickness (µm)_Mean`,
+    `Spine thickness (µm)_2.5%`,
+    `Spine thickness (µm)_97.5%`,
+
+    `Spine length (mm)_Mean`,
+    `Spine length (mm)_2.5%`,
+    `Spine length (mm)_97.5%`
+  ) %>%
+
+  mutate(
+    across(
+      where(is.numeric),
+      ~ signif(.x, 3)
+    )
+  )
+
+
+# ------------------------------------------------------------
+# 8. Display table
+# ------------------------------------------------------------
+
+effects_table_no_whakaari
+
+
+# ------------------------------------------------------------
+# 9. Save table
+# ------------------------------------------------------------
+
+dir.create(
+  "ResultsTables",
+  showWarnings = FALSE,
+  recursive = TRUE
+)
+
+write.csv(
+  effects_table_no_whakaari,
+  "ResultsTables/effects_table_pH_lat_models_excluding_WhiteIsland_original_units.csv",
+  row.names = FALSE
+)
+
+```
+
+
+# Genus-specific responses
+```{r}
+
+# ============================================================
+# GENUS-SPECIFIC PREDICTION CURVES
+# New median pHT × latitude models
+# Predictions at mean absolute latitude
+# ============================================================
+
+traits <- c(
+  "Biomineral",
+  "ThicknessCT.um.",
+  "Jaw_length",
+  "SpineBiomineral",
+  "Spine_diameter",
+  "Spine_length"
+)
+
+trait_labels <- c(
+  Biomineral = "Test Biomineral (%)",
+  ThicknessCT.um. = "Test Thickness (µm)",
+  SpineBiomineral = "Spine Biomineral (%)",
+  Spine_diameter = "Spine Thickness (µm)",
+  Spine_length = "Spine Length (mm)",
+  Jaw_length = "Jaw Length (mm)"
+)
+
+
+# ------------------------------------------------------------
+# 1. Generate prediction grid
+# ------------------------------------------------------------
+
+pH_seq <- seq(
+  min(dat_all$median_pH_z, na.rm = TRUE),
+  max(dat_all$median_pH_z, na.rm = TRUE),
+  length.out = 100
+)
+
+newdata <- expand.grid(
+  median_pH_z = pH_seq,
+  Abs_lat_z = 0,
+  pH_var_z = 0,
+  TestDiameter_z = 0,
+  Genus = unique(dat_all$Genus),
+  Analogue = unique(dat_all$Analogue)[1],
+  SitePair = unique(dat_all$SitePair)[1]
+)
+
+
+# ------------------------------------------------------------
+# 2. Extract posterior predictions
+# ------------------------------------------------------------
+
+fitted_list <- list()
+
+for (trait in traits) {
+
+  mod <- med_var_pH_lat_models[[trait]]
+
+  fitted <- add_epred_draws(
+    object = mod,
+    newdata = newdata,
+    re_formula = ~(1 + median_pH_z || Genus),
+    allow_new_levels = TRUE,
+    ndraws = 1000
+  ) %>%
+    mutate(Trait = trait)
+
+  fitted_list[[trait]] <- fitted
+}
+
+
+# ------------------------------------------------------------
+# 3. Combine predictions and convert pHT back to raw scale
+# ------------------------------------------------------------
+
+fitted_all <- bind_rows(fitted_list) %>%
+  mutate(
+    median_pH_raw = median_pH_z * pH_sd + pH_mean,
+    Trait_label = factor(
+      trait_labels[Trait],
+      levels = trait_labels[traits]
+    )
+  )
+
+
+# ------------------------------------------------------------
+# 4. Summarise posterior predictions
+# ------------------------------------------------------------
+
+fitted_summary <- fitted_all %>%
+  group_by(Trait, Genus, median_pH_z,
+           median_pH_raw, Trait_label) %>%
+  median_hdci(.epred, .width = c(0.95, 0.50)) %>%
+  ungroup()
+
+
+fitted_summary_wide <- fitted_summary %>%
+  pivot_wider(
+    names_from = .width,
+    values_from = c(.epred, .lower, .upper)
+  ) %>%
+  rename(
+    median = .epred_0.95,
+    hdi_95_low = .lower_0.95,
+    hdi_95_high = .upper_0.95,
+    hdi_50_low = .lower_0.5,
+    hdi_50_high = .upper_0.5
+  )
+
+
+# ------------------------------------------------------------
+# 5. Genus colours and ordering
+# ------------------------------------------------------------
+
+genus_order <- c(
+  "Arbacia",
+  "Paracentrotus",
+  "Echinometra",
+  "Evechinus",
+  "Diadema"
+)
+
+genus_colors <- c(
+  Arbacia = "#d96b6b",
+  Paracentrotus = "#f4a261",
+  Echinometra = "#7f9cc9",
+  Evechinus = "#6fcf97",
+  Diadema = "#7a5aa6"
+)
+
+fitted_summary_wide$Genus <- factor(
+  fitted_summary_wide$Genus,
+  levels = genus_order
+)
+
+
+# ------------------------------------------------------------
+# 6. Plot
+# ------------------------------------------------------------
+
+Genus_line_plots <- ggplot(
+  fitted_summary_wide,
+  aes(
+    x = median_pH_raw,
+    y = median,
+    group = Genus,
+    color = Genus,
+    fill = Genus
+  )
+) +
+  geom_ribbon(
+    aes(ymin = hdi_95_low, ymax = hdi_95_high),
+    alpha = 0.2,
+    color = NA
+  ) +
+  geom_ribbon(
+    aes(ymin = hdi_50_low, ymax = hdi_50_high),
+    alpha = 0.4,
+    color = NA
+  ) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~ Trait_label, scales = "free_y") +
+  scale_color_manual(values = genus_colors) +
+  scale_fill_manual(values = genus_colors) +
+  scale_x_reverse() +
+  labs(
+    x = expression(pH[T]),
+    y = "Predicted Trait Value"
+  ) +
+  theme_classic(base_size = 16) +
+  theme(
+    strip.text = element_text(face = "bold"),
+    panel.border = element_rect(
+      fill = NA,
+      color = "black"
+    )
+  )
+
+Genus_line_plots
+
+
+# ------------------------------------------------------------
+# 7. Save figure
+# ------------------------------------------------------------
+
+ggsave(
+  "Figures/Supplementary/Genus_line_plots.svg",
+  Genus_line_plots,
+  width = 14,
+  height = 12,
+  dpi = 300
+)
+
+```
+
+# Extract posterior means 
+```{r}
+
+# ============================================================
+# EXTRACT GENUS-SPECIFIC POSTERIOR pHT EFFECTS
+#
+# Genus-specific slopes at mean absolute latitude
+# Direction: decreasing median pHT
+# Responses: original measurement units
+# ============================================================
+
+
+# ------------------------------------------------------------
+# 1. Define traits and labels
+# ------------------------------------------------------------
+
+traits <- c(
+  "Biomineral",
+  "ThicknessCT.um.",
+  "Jaw_length",
+  "SpineBiomineral",
+  "Spine_diameter",
+  "Spine_length"
+)
+
+trait_labels <- c(
+  Biomineral = "Test biomineral (%)",
+  ThicknessCT.um. = "Test thickness (µm)",
+  Jaw_length = "Jaw length (mm)",
+  SpineBiomineral = "Spine biomineral (%)",
+  Spine_diameter = "Spine thickness (µm)",
+  Spine_length = "Spine length (mm)"
+)
+
+
+# ------------------------------------------------------------
+# 2. Define genus order
+# ------------------------------------------------------------
+
+genus_order <- c(
+  "Arbacia",
+  "Paracentrotus",
+  "Echinometra",
+  "Diadema",
+  "Evechinus"
+)
+
+
+# ------------------------------------------------------------
+# 3. Extract genus-specific posterior slopes
+# ------------------------------------------------------------
+
+extract_genus_slopes <- function(model, trait, genus_order) {
+
+  # Extract complete genus-specific posterior coefficients
+  genus_coefficients <- coef(
+    model,
+    summary = FALSE
+  )$Genus
+
+  # Check coefficient names
+  coefficient_names <- dimnames(genus_coefficients)[[3]]
+
+  if (!"median_pH_z" %in% coefficient_names) {
+    stop(
+      paste(
+        "median_pH_z coefficient not found for",
+        trait,
+        "\nAvailable coefficients:",
+        paste(coefficient_names, collapse = ", ")
+      )
+    )
+  }
+
+  # Check genus names
+  available_genera <- dimnames(genus_coefficients)[[2]]
+
+  bind_rows(
+    lapply(genus_order, function(genus) {
+
+      if (!genus %in% available_genera) {
+        stop(
+          paste(
+            "Genus not found in model:",
+            genus,
+            "for trait:",
+            trait,
+            "\nAvailable genera:",
+            paste(available_genera, collapse = ", ")
+          )
+        )
+      }
+
+      # Extract complete genus-specific median pHT slope
+      slope_draws <- genus_coefficients[
+        ,
+        genus,
+        "median_pH_z"
+      ]
+
+      # Reverse sign to express effect of decreasing pHT
+      slope_draws <- -as.numeric(slope_draws)
+
+      # Convert spine thickness from mm to µm
+      if (trait == "Spine_diameter") {
+        slope_draws <- slope_draws * 1000
+      }
+
+      tibble(
+        Genus = genus,
+        Trait = trait,
+        effect = slope_draws
+      )
+
+    })
+  )
+}
+
+
+# ------------------------------------------------------------
+# 4. Extract posterior draws from all six models
+# ------------------------------------------------------------
+
+genus_pH_draws <- bind_rows(
+  lapply(traits, function(trait) {
+
+    extract_genus_slopes(
+      model = med_var_pH_lat_models[[trait]],
+      trait = trait,
+      genus_order = genus_order
+    )
+
+  })
+)
+
+
+# ------------------------------------------------------------
+# 5. Calculate posterior means and 95% credible intervals
+# ------------------------------------------------------------
+
+genus_pH_summary <- genus_pH_draws %>%
+  group_by(Genus, Trait) %>%
+  summarise(
+    Mean = mean(effect),
+    Lower = quantile(effect, 0.025),
+    Upper = quantile(effect, 0.975),
+    .groups = "drop"
+  )
+
+
+# ------------------------------------------------------------
+# 6. Convert to wide table
+# ------------------------------------------------------------
+
+genus_pH_table <- genus_pH_summary %>%
+  mutate(
+    Genus = factor(
+      Genus,
+      levels = genus_order
+    ),
+
+    Trait_label = factor(
+      trait_labels[Trait],
+      levels = unname(trait_labels[traits])
+    )
+  ) %>%
+  pivot_wider(
+    id_cols = Genus,
+    names_from = Trait_label,
+    values_from = c(Mean, Lower, Upper),
+    names_glue = "{Trait_label}_{.value}"
+  ) %>%
+  arrange(Genus) %>%
+  select(
+    Genus,
+
+    `Test biomineral (%)_Mean`,
+    `Test biomineral (%)_Lower`,
+    `Test biomineral (%)_Upper`,
+
+    `Test thickness (µm)_Mean`,
+    `Test thickness (µm)_Lower`,
+    `Test thickness (µm)_Upper`,
+
+    `Jaw length (mm)_Mean`,
+    `Jaw length (mm)_Lower`,
+    `Jaw length (mm)_Upper`,
+
+    `Spine biomineral (%)_Mean`,
+    `Spine biomineral (%)_Lower`,
+    `Spine biomineral (%)_Upper`,
+
+    `Spine thickness (µm)_Mean`,
+    `Spine thickness (µm)_Lower`,
+    `Spine thickness (µm)_Upper`,
+
+    `Spine length (mm)_Mean`,
+    `Spine length (mm)_Lower`,
+    `Spine length (mm)_Upper`
+  ) %>%
+  mutate(
+    across(
+      where(is.numeric),
+      ~ signif(.x, 3)
+    )
+  )
+
+
+# ------------------------------------------------------------
+# 7. Rename interval columns
+# ------------------------------------------------------------
+
+names(genus_pH_table) <- gsub(
+  "_Lower$",
+  "_2.5%",
+  names(genus_pH_table)
+)
+
+names(genus_pH_table) <- gsub(
+  "_Upper$",
+  "_97.5%",
+  names(genus_pH_table)
+)
+
+
+# ------------------------------------------------------------
+# 8. Display table
+# ------------------------------------------------------------
+
+genus_pH_table
+
+
+# ------------------------------------------------------------
+# 9. Check table dimensions and missing values
+# ------------------------------------------------------------
+
+cat("\nTable dimensions:\n")
+print(dim(genus_pH_table))
+
+cat("\nMissing values per column:\n")
+print(colSums(is.na(genus_pH_table)))
+
+cat("\nGenus rows:\n")
+print(genus_pH_table$Genus)
+
+
+# ------------------------------------------------------------
+# 10. Save results
+# ------------------------------------------------------------
+
+write.csv(
+  genus_pH_table,
+  "ResultsTables/Genus_specific_pH_effects.csv",
+  row.names = FALSE
+)
+
+```
+
+
+# Genus-specific deviations from global pH slope
+```{r}
+
+# ============================================================
+# GENUS-SPECIFIC pHT SLOPES AT MEAN LATITUDE
+# ============================================================
+traits <- c(
+  "Biomineral",
+  "ThicknessCT.um.",
+  "Jaw_length",
+  "SpineBiomineral",
+  "Spine_diameter",
+  "Spine_length"
+)
+
+# ------------------------------------------------------------
+# 1. Extract posterior slopes
+# ------------------------------------------------------------
+
+slope_draws_all <- map_dfr(traits, function(trait) {
+
+  mod <- med_var_pH_lat_models[[trait]]
+
+  # Fixed-effect posterior draws
+  fix_draws <- fixef(mod, summary = FALSE)
+
+  # Genus-level random-effect posterior draws
+  ran_draws <- ranef(mod, summary = FALSE)$Genus
+
+  genera <- dimnames(ran_draws)[[2]]
+
+  # Population-level pHT slope at mean latitude
+  global_slope <- fix_draws[, "median_pH_z"]
+
+  map_dfr(genera, function(genus) {
+
+    # Genus-specific random slope deviation
+    genus_deviation <- ran_draws[
+      , genus, "median_pH_z"
+    ]
+
+    # Genus-specific pHT slope
+    genus_slope <- global_slope + genus_deviation
+
+    # Difference from population-level slope
+    difference <- genus_slope - global_slope
+
+    tibble(
+      Trait = trait,
+      Genus = genus,
+      Global_slope = global_slope,
+      Genus_slope = genus_slope,
+      Difference = difference
+    )
+  })
+})
+
+# ============================================================
+# 2. SUMMARISE POSTERIOR DISTRIBUTIONS
+# ============================================================
+
+genus_slope_summary <- slope_draws_all %>%
+  group_by(Trait, Genus) %>%
+  summarise(
+
+    # Population-level pHT slope
+    Global_slope = median(Global_slope),
+
+    # Genus-specific pHT slope
+    Genus_slope = median(Genus_slope),
+    Genus_slope_lower = quantile(Genus_slope, 0.025),
+    Genus_slope_upper = quantile(Genus_slope, 0.975),
+
+    # Difference: genus slope - global slope
+    Slope_difference = median(Difference),
+    Difference_lower = quantile(Difference, 0.025),
+    Difference_upper = quantile(Difference, 0.975),
+
+    # Probability of a more positive pHT slope
+    # (stronger decline under reduced pHT)
+    Probability_stronger_decline = mean(Difference > 0),
+
+    # Probability of a more negative pHT slope
+    Probability_more_negative_slope = mean(Difference < 0),
+
+    .groups = "drop"
+  ) %>%
+  arrange(Trait, Genus)
+
+# ============================================================
+# 3. CLEAN TABLE FOR DISPLAY / EXPORT
+# ============================================================
+
+genus_slope_table <- genus_slope_summary %>%
+  mutate(
+    Genus_slope_CrI = sprintf(
+      "%.2f (%.2f, %.2f)",
+      Genus_slope,
+      Genus_slope_lower,
+      Genus_slope_upper
+    ),
+
+    Slope_difference_CrI = sprintf(
+      "%.2f (%.2f, %.2f)",
+      Slope_difference,
+      Difference_lower,
+      Difference_upper
+    ),
+
+    Probability_stronger_decline = round(
+      Probability_stronger_decline, 3
+    ),
+
+    Probability_more_negative_slope = round(
+      Probability_more_negative_slope, 3
+    )
+  ) %>%
+  select(
+    Trait,
+    Genus,
+    Global_slope,
+    Genus_slope_CrI,
+    Slope_difference_CrI,
+    Probability_stronger_decline,
+    Probability_more_negative_slope
+  )
+
+View(genus_slope_table)
+
+```
+
+
+# pH x SST interaction models
+```{r}
+traits <- c(
+  "Biomineral",
+  "ThicknessCT.um.",
+  "Jaw_length",
+  "SpineBiomineral",
+  "Spine_diameter",
+  "Spine_length"
+)
+
+temp_vals <- c(18, 23, 28)
+
+dat_all <- dat_all %>%
+  mutate(
+    pH_z = as.numeric(scale(median_pH)),
+    Temp_z = as.numeric(scale(median_temp)),
+    TestDiameter_z = as.numeric(scale(TestDiameter))
+  )
+
+pH_temp_models <- list()
+
+for(trait in traits){
+
+ formula <- as.formula(
+  paste0(trait, " ~ 1 +
+         pH_z * Temp_z + scale(pH_var) +
+         TestDiameter_z +
+         (1 + pH_z || Genus) +
+         (1 | Analogue/SitePair)")
+)
+
+  pH_temp_models[[trait]] <- brm(
+    formula = formula,
+    data = dat_all,
+    iter = 4000,
+    chains = 3,
+    cores = 3,
+    seed = 123,
+    control = list(adapt_delta = 0.99,
+                   max_treedepth = 15)
+  )
+}
+
+temp_vals_z <- (temp_vals - mean(dat_all$median_temp)) / sd(dat_all$median_temp)
+testdiam_mean_z <- mean(dat_all$TestDiameter_z)
+
+size_corrected_data <- list()
+
+for(trait in traits){
+  
+  mod <- pH_temp_models[[trait]]
+  
+
+  beta_size <- fixef(mod)["TestDiameter_z","Estimate"]
+  
+  tmp <- dat_all %>%
+    mutate(
+      trait_value = .data[[trait]],
+      trait_corr = trait_value - beta_size * TestDiameter_z
+    )
+  
+  size_corrected_data[[trait]] <- tmp
+}
+
+trait_to_label <- c(
+  Biomineral = "Predicted Test Biomineral (%)",
+  ThicknessCT.um. = "Predicted Test Thickness (µm)",
+  Jaw_length = "Predicted Jaw Length (mm)",
+  SpineBiomineral = "Predicted Spine Biomineral (%)",
+  Spine_diameter = "Predicted Spine Thickness (µm)",
+  Spine_length = "Predicted Spine Length (mm)"
+)
+
+# ---- Plot ---- #
+
+fitted_plots <- list()
+
+for(trait in traits){
+
+  mod <- pH_temp_models[[trait]]
+
+  newdata <- expand.grid(
+    pH_z = seq(min(dat_all$pH_z), max(dat_all$pH_z), length.out = 50),
+    Temp_z = temp_vals_z,
+    TestDiameter_z = testdiam_mean_z,
+    pH_var = mean(dat_all$pH_var, na.rm = TRUE)
+  )
+
+  fitted <- add_epred_draws(
+    mod,
+    newdata = newdata,
+    re_formula = NA
+  )
+
+  fitted <- fitted %>%
+    mutate(
+      median_pH = pH_z * sd(dat_all$median_pH) + mean(dat_all$median_pH),
+      median_temp = Temp_z * sd(dat_all$median_temp) + mean(dat_all$median_temp)
+    )
+
+  fitted_summary <- fitted %>%
+    group_by(median_pH, median_temp) %>%
+    median_hdci(.epred, .width = c(0.95, 0.5)) %>%
+    ungroup()
+
+  hd95 <- fitted_summary %>% 
+    filter(.width == 0.95) %>% 
+    select(
+      median_pH, median_temp,
+      hdi_95_low = .lower,
+      hdi_95_high = .upper
+    )
+
+  hd50 <- fitted_summary %>% 
+    filter(.width == 0.5) %>% 
+    select(
+      median_pH, median_temp,
+      hdi_50_low = .lower,
+      hdi_50_high = .upper
+    )
+
+  median_vals <- fitted_summary %>% 
+    filter(.width == 0.95) %>% 
+    select(median_pH, median_temp, median = .epred)
+
+  plot_data <- median_vals %>%
+    left_join(hd95, by = c("median_pH", "median_temp")) %>%
+    left_join(hd50, by = c("median_pH", "median_temp")) %>%
+    mutate(
+      median_temp_label = factor(
+        median_temp,
+        levels = temp_vals,
+        labels = paste0(temp_vals, "°C")
+      )
+    )
+
+  overlay_data <- size_corrected_data[[trait]] %>%
+    mutate(
+      median_temp_label = factor(
+        temp_vals[
+          apply(abs(outer(median_temp, temp_vals, "-")), 1, which.min)
+        ],
+        levels = temp_vals,
+        labels = paste0(temp_vals, "°C")
+      )
+    ) %>%
+    filter(median_temp_label %in% unique(plot_data$median_temp_label))
+
+  y_label <- trait_to_label[[trait]]
+
+  p <- ggplot(plot_data, aes(x = median_pH, y = median)) +
+
+    geom_ribbon(
+      aes(ymin = hdi_95_low, ymax = hdi_95_high,
+          fill = median_temp_label),
+      alpha = 0.2
+    ) +
+
+    geom_ribbon(
+      aes(ymin = hdi_50_low, ymax = hdi_50_high,
+          fill = median_temp_label),
+      alpha = 0.4
+    ) +
+
+    geom_line(
+      aes(group = median_temp_label),
+      color = "black",
+      size = 1
+    ) +
+
+    geom_point(
+      data = overlay_data,
+      aes(x = median_pH, y = trait_corr,
+          color = median_temp_label),
+      inherit.aes = FALSE,
+      alpha = 0.6,
+      size = 2
+    ) +
+
+    facet_wrap(~ median_temp_label) +
+
+    scale_fill_manual(values = c(
+      "18°C" = "lightblue",
+      "23°C" = "orange",
+      "28°C" = "red"
+    )) +
+
+    scale_color_manual(values = c(
+      "18°C" = "lightblue",
+      "23°C" = "orange",
+      "28°C" = "red"
+    )) +
+
+    labs(
+      x = expression("pH"[T]),
+      y = y_label
+    ) +
+
+    scale_x_reverse(
+      limits = c(8.13, 7.53),
+      breaks = seq(7.6, 8.0, by = 0.2),
+      expand = c(0.02, 0.02)
+    ) +
+
+    theme_classic(base_size = 16) +
+    theme(
+      legend.position = "none",
+      panel.border = element_rect(
+        color = "black",
+        fill = NA,
+        size = 1
+      ),
+      strip.text = element_text(face = "bold")
+    )
+
+  fitted_plots[[trait]] <- p
+  print(p)
+}
+
+combined_pH_temp_line_plot <- wrap_plots(fitted_plots, ncol = 3)
+combined_pH_temp_line_plot
+
+ggsave(
+  "Figures/Supplementary/Combined_pH_temp_lineplots.svg",
+  combined_pH_temp_line_plot,
+  width = 16,
+  height = 8
+)
+
+```
+
+# R2 Statistics
+```{r}
+r2_results <- list()
+
+for(trait in traits){
+  
+  mod <- pH_temp_models[[trait]]
+  
+  r2 <- bayes_R2(mod)
+  
+  r2_results[[trait]] <- data.frame(
+    Trait = trait,
+    Estimate = r2[, "Estimate"],
+    Est_Error = r2[, "Est.Error"],
+    Q2.5 = r2[, "Q2.5"],
+    Q97.5 = r2[, "Q97.5"]
+  )
+}
+
+r2_results_ph_temp_interaction <- bind_rows(r2_results)
+
+r2_results_ph_temp_interaction
+
+write.csv(r2_results_ph_temp_interaction, "ResultsTables/r2_results_ph_temp_interaction.csv", row.names = FALSE)
+
+```
+
+# Diagnostic Plots
+```{r}
+models <- pH_temp_models
+
+invisible(
+  lapply(names(models), function(name){
+    save_model_diagnostics(models[[name]], name,
+                           "DiagnosticPlots/pH_SST_models")
+  })
+)
+```
+
+# Extract posterior means
+```{r}
+# ============================================================
+# EXTRACT POSTERIOR DRAWS FOR ALL FIVE PREDICTORS
+# MEDIAN pHT × TEMPERATURE MODELS, INCLUDING pHT VARIABILITY
+# ============================================================
+
+# ------------------------------------------------------------
+# 1. DEFINE MODELS
+# ------------------------------------------------------------
+
+models_med_var_pH_temp <- list(
+  "Test biomineral (%)" = pH_temp_models[["Biomineral"]],
+  "Test thickness (µm)" = pH_temp_models[["ThicknessCT.um."]],
+  "Jaw length (mm)" = pH_temp_models[["Jaw_length"]],
+  "Spine biomineral (%)" = pH_temp_models[["SpineBiomineral"]],
+  "Spine thickness (µm)" = pH_temp_models[["Spine_diameter"]],
+  "Spine length (mm)" = pH_temp_models[["Spine_length"]]
+)
+
+
+# ------------------------------------------------------------
+# 2. DEFINE MODEL PARAMETERS AND LABELS
+# ------------------------------------------------------------
+
+parameters <- tibble(
+  parameter = c(
+    "b_TestDiameter_z",
+    "b_pH_z",
+    "b_Temp_z",
+    "b_pH_z:Temp_z",
+    "b_scalepH_var"
+  ),
+
+  predictor = c(
+    "Test diameter",
+    "Decreasing median pHT",
+    "Median SST",
+    "Decreasing median pHT × median SST",
+    "pHT variability"
+  ),
+
+  reverse = c(
+    FALSE,
+    TRUE,
+    FALSE,
+    TRUE,
+    FALSE
+  )
+)
+
+
+# ------------------------------------------------------------
+# 3. EXTRACT POSTERIOR DRAWS
+# ------------------------------------------------------------
+
+extract_all_draws <- function(model, response_name) {
+
+  draws <- as_draws_df(model)
+
+  bind_rows(
+    lapply(seq_len(nrow(parameters)), function(i) {
+
+      param <- parameters$parameter[i]
+
+      effect <- draws[[param]]
+
+      # Reverse median pHT and its interaction with SST
+      # to represent decreasing median pHT
+      if (parameters$reverse[i]) {
+        effect <- -effect
+      }
+
+      tibble(
+        response = response_name,
+        predictor = parameters$predictor[i],
+        effect = effect
+      )
+
+    })
+  )
+}
+
+
+draws_all <- bind_rows(
+  lapply(names(models_med_var_pH_temp), function(response_name) {
+
+    extract_all_draws(
+      models_med_var_pH_temp[[response_name]],
+      response_name
+    )
+
+  })
+)
+
+
+# ------------------------------------------------------------
+# 4. SUMMARISE POSTERIOR ESTIMATES
+# Mean and 95% credible interval
+# ------------------------------------------------------------
+
+effects_table_med_var_pH_temp <- draws_all %>%
+  group_by(predictor, response) %>%
+  summarise(
+    Mean = mean(effect),
+    `2.5%` = quantile(effect, 0.025),
+    `97.5%` = quantile(effect, 0.975),
+    .groups = "drop"
+  )
+
+
+# ------------------------------------------------------------
+# 5. CREATE WIDE TABLE
+# ------------------------------------------------------------
+
+effects_table_med_var_pH_temp_wide <- effects_table_med_var_pH_temp %>%
+
+  mutate(
+    predictor = factor(
+      predictor,
+      levels = c(
+        "Test diameter",
+        "Decreasing median pHT",
+        "Median SST",
+        "Decreasing median pHT × median SST",
+        "pHT variability"
+      )
+    ),
+
+    response = factor(
+      response,
+      levels = c(
+        "Test biomineral (%)",
+        "Test thickness (µm)",
+        "Jaw length (mm)",
+        "Spine biomineral (%)",
+        "Spine thickness (µm)",
+        "Spine length (mm)"
+      )
+    )
+  ) %>%
+
+  pivot_wider(
+    names_from = response,
+    values_from = c(Mean, `2.5%`, `97.5%`),
+    names_glue = "{response}_{.value}"
+  ) %>%
+
+  arrange(predictor) %>%
+
+  # Reorder columns by trait, with Mean, 2.5%, 97.5%
+  select(
+    predictor,
+
+    `Test biomineral (%)_Mean`,
+    `Test biomineral (%)_2.5%`,
+    `Test biomineral (%)_97.5%`,
+
+    `Test thickness (µm)_Mean`,
+    `Test thickness (µm)_2.5%`,
+    `Test thickness (µm)_97.5%`,
+
+    `Jaw length (mm)_Mean`,
+    `Jaw length (mm)_2.5%`,
+    `Jaw length (mm)_97.5%`,
+
+    `Spine biomineral (%)_Mean`,
+    `Spine biomineral (%)_2.5%`,
+    `Spine biomineral (%)_97.5%`,
+
+    `Spine thickness (µm)_Mean`,
+    `Spine thickness (µm)_2.5%`,
+    `Spine thickness (µm)_97.5%`,
+
+    `Spine length (mm)_Mean`,
+    `Spine length (mm)_2.5%`,
+    `Spine length (mm)_97.5%`
+  ) %>%
+
+  # Round all estimates to 3 significant figures
+  mutate(
+    across(
+      where(is.numeric),
+      ~ signif(.x, 3)
+    )
+  )
+
+
+# ------------------------------------------------------------
+# 6. INSPECT TABLE
+# ------------------------------------------------------------
+
+effects_table_med_var_pH_temp_wide
+
+
+# ------------------------------------------------------------
+# 7. SAVE TABLE
+# ------------------------------------------------------------
+
+write.csv(
+  effects_table_med_var_pH_temp_wide,
+  "ResultsTables/effects_table_med_var_pH_temp_models.csv",
+  row.names = FALSE
+)
+```
+
+
+# pH variability summary plot
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(forcats)
+
+# ==================================================
+# 1. PREPARE DATA
+# ==================================================
+
+pH_variability_summary <- environmental_data %>%
+  mutate(
+    Site = factor(Site, levels = c("Extreme", "Reference"))
+  ) %>%
+  pivot_longer(
+    cols = c(
+      median_pH,
+      pH_var,
+      `perc_below_7.8`,
+      Dur_events_h
+    ),
+    names_to = "Metric",
+    values_to = "Value"
+  ) %>%
+  filter(!is.na(Value)) %>%
+  mutate(
+    Metric = factor(
+      Metric,
+      levels = c(
+        "median_pH",
+        "pH_var",
+        "perc_below_7.8",
+        "Dur_events_h"
+      ),
+      labels = c(
+        "A) Median pHT",
+        "B) pHT variability (IQR)",
+        "C) Measurements below pHT 7.8 (%)",
+        "D) Mean extreme-event duration (hours)"
+      )
+    )
+  )
+
+# ==================================================
+# 2. PREPARE SHARED Y-AXIS LABELS
+# ==================================================
+
+analogue_order <- unique(environmental_data$Analogue)
+n_analogues <- length(analogue_order)
+
+pH_variability_summary <- pH_variability_summary %>%
+  mutate(
+    Analogue = factor(Analogue, levels = analogue_order),
+
+    # One central position per analogue
+    y_base = n_analogues - as.numeric(Analogue) + 1,
+
+    # Slightly offset the two conditions
+    y_position = case_when(
+      Site == "Extreme" ~ y_base + 0.15,
+      Site == "Reference" ~ y_base - 0.15
+    )
+  )
+
+# ==================================================
+# 3. CALCULATE COLOURS WITHIN EACH PANEL
+# ==================================================
+
+pH_variability_summary <- pH_variability_summary %>%
+  group_by(Metric, Site) %>%
+  mutate(
+    value_scaled = {
+      value_range <- range(Value, na.rm = TRUE)
+
+      if (diff(value_range) == 0) {
+        rep(0.5, n())
+      } else {
+        (Value - value_range[1]) / diff(value_range)
+      }
+    },
+    point_colour = case_when(
+      Site == "Extreme" ~ scales::col_numeric(
+        palette = c("#F4A582", "#C92F2A", "#7F0000"),
+        domain = c(0, 1)
+      )(value_scaled),
+
+      Site == "Reference" ~ scales::col_numeric(
+        palette = c("#A6BDDB", "#3C5488", "#081D58"),
+        domain = c(0, 1)
+      )(value_scaled)
+    )
+  ) %>%
+  ungroup()
+
+
+# ==================================================
+# 4. CREATE FOUR INDIVIDUAL PLOTS
+# ==================================================
+
+library(patchwork)
+
+make_pH_plot <- function(metric_name, x_title) {
+
+  plot_data <- pH_variability_summary %>%
+    filter(Metric == metric_name)
+
+  ggplot(
+    plot_data,
+    aes(x = Value, y = y_position)
+  ) +
+
+    geom_vline(
+  xintercept = if (metric_name == "A) Median pHT") 7.4 else 0,
+  colour = "black",
+  linewidth = 0.5
+) +
+
+    # Dashed lollipop lines
+    geom_segment(
+  aes(
+    x = if (metric_name == "A) Median pHT") 7.4 else 0,
+    xend = Value,
+    yend = y_position,
+    colour = point_colour
+  ),
+  linewidth = 0.8,
+  linetype = "dotdash",
+  alpha = 0.9
+) +
+
+    # Circles at line endpoints
+    geom_point(
+      aes(colour = point_colour),
+      size = 2.8
+    ) +
+
+    # Pre-calculated red and blue gradients
+    scale_colour_identity(
+      breaks = c("#7F0000", "#081D58"),
+      labels = c("Extreme", "Reference"),
+      name = "Site condition",
+      guide = "legend"
+    ) +
+
+    # Analogue labels
+    scale_y_continuous(
+      breaks = seq_len(n_analogues),
+      labels = rev(analogue_order),
+      limits = c(0.5, n_analogues + 0.5),
+      expand = c(0, 0)
+    ) +
+
+    scale_x_continuous(
+  limits = if (metric_name == "A) Median pHT") {
+    c(7.4, NA)
+  } else {
+    c(0, NA)
+  },
+  expand = expansion(mult = c(0, 0.05))
+) +
+
+    labs(
+      x = x_title,
+      y = NULL
+    ) +
+
+    theme_classic(base_size = 12) +
+
+    theme(
+      axis.title.x = element_text(
+        size = 11,
+        colour = "black",
+        margin = margin(t = 12)
+      ),
+
+      axis.text.y = element_text(
+        size = 9,
+        colour = "black"
+      ),
+
+      axis.text.x = element_text(
+        colour = "black"
+      ),
+
+      axis.line.y = element_blank(),
+axis.line.x = element_line(colour = "black", linewidth = 0.5),
+      axis.ticks.y = element_blank(),
+
+      legend.position = "bottom",
+
+      plot.margin = margin(10, 15, 10, 10)
+    )
+}
+
+
+# ==================================================
+# 5. GENERATE EACH PANEL
+# ==================================================
+
+pA <- make_pH_plot(
+  "A) Median pHT",
+  expression("Median pH"[T])
+)
+
+pB <- make_pH_plot(
+  "B) pHT variability (IQR)",
+  expression(pH[T] ~ IQR)
+)
+
+pC <- make_pH_plot(
+  "C) Measurements below pHT 7.8 (%)",
+  expression("% of measurements" ~ pH[T] < 7.8)
+)
+
+pD <- make_pH_plot(
+  "D) Mean extreme-event duration (hours)",
+  "Mean duration of extreme events (hours)"
+)
+
+# ==================================================
+# 6. COMBINE WITH PATCHWORK
+# ==================================================
+pH_var_summ <- (
+  pA + pB +
+  pC + pD
+) +
+  plot_layout(
+    ncol = 2,
+    guides = "collect"
+  ) +
+  plot_annotation(
+    tag_levels = "A",
+    theme = theme(
+      plot.tag = element_text(
+        family = "sans",
+        face = 2,
+        size = 16,
+        colour = "black"
+      )
+    )
+  ) &
+  theme(legend.position = "bottom")
+
+
+# ==================================================
+# 7. DISPLAY
+# ==================================================
+
+print(pH_var_summ)
+
+# ==================================================
+# 8. SAVE FIGURE
+# ==================================================
+
+ggsave(
+  "Figures/Supplementary/pH_exposure_metrics.svg",
+  plot = pH_var_summ,
+  width = 8,
+  height = 9,
+  dpi = 300
+)
+```
